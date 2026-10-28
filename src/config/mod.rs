@@ -10,6 +10,7 @@ pub struct Config {
     pub max_users_default: u32,
     pub bot_tz: chrono_tz::Tz,
     pub rust_log: String,
+    pub scan_interval_min: u32,
 }
 
 impl fmt::Debug for Config {
@@ -21,6 +22,7 @@ impl fmt::Debug for Config {
             .field("max_users_default", &self.max_users_default)
             .field("bot_tz", &self.bot_tz)
             .field("rust_log", &self.rust_log)
+            .field("scan_interval_min", &self.scan_interval_min)
             .finish()
     }
 }
@@ -132,6 +134,11 @@ impl Config {
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|| "info,robertos_watching_bot=debug".to_string());
 
+        let scan_interval_min = match map.get("SCAN_INTERVAL_MIN").map(|s| s.trim()) {
+            Some(val) if !val.is_empty() => val.parse::<u32>().unwrap_or(30),
+            _ => 30,
+        };
+
         Ok(Config {
             bot_token,
             admin_chat_id,
@@ -139,7 +146,12 @@ impl Config {
             max_users_default,
             bot_tz,
             rust_log,
+            scan_interval_min,
         })
+    }
+
+    pub fn scan_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.scan_interval_min as u64 * 60)
     }
 
     #[allow(clippy::should_implement_trait)]
@@ -204,6 +216,7 @@ mod tests {
         assert_eq!(config.max_users_default, 300);
         assert_eq!(config.bot_tz, chrono_tz::America::Managua);
         assert_eq!(config.rust_log, "info,robertos_watching_bot=debug");
+        assert_eq!(config.scan_interval_min, 30);
     }
 
     #[test]
@@ -211,9 +224,12 @@ mod tests {
         let mut env = valid_env();
         env.insert("MAX_USERS_DEFAULT", "500");
         env.insert("RUST_LOG", "trace");
+        env.insert("SCAN_INTERVAL_MIN", "45");
         let config = Config::from_iter(env).expect("Configuración personalizada falló");
         assert_eq!(config.max_users_default, 500);
         assert_eq!(config.rust_log, "trace");
+        assert_eq!(config.scan_interval_min, 45);
+        assert_eq!(config.scan_interval().as_secs(), 45 * 60);
     }
 
     #[test]

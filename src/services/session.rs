@@ -44,6 +44,7 @@ mod tests {
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
             rust_log: "info".to_string(),
+            scan_interval_min: 30,
         };
 
         let pool = init(&config).await.expect("Fallo al crear BD");

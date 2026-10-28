@@ -107,6 +107,7 @@ async fn test_login_password_never_reaches_tracing_logs_or_storage() {
         max_users_default: 300,
         bot_tz: chrono_tz::America::Managua,
         rust_log: "trace".to_string(),
+        scan_interval_min: 30,
     };
 
     let pool = storage::init(&config)
@@ -227,6 +228,7 @@ async fn test_logout_purges_user_cascades_and_alerts() {
         max_users_default: 300,
         bot_tz: chrono_tz::America::Managua,
         rust_log: "info".to_string(),
+        scan_interval_min: 30,
     };
 
     let pool = storage::init(&config)

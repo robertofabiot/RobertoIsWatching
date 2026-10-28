@@ -1,3 +1,4 @@
+pub mod scanner;
 pub mod session;
 pub mod sync;
 
