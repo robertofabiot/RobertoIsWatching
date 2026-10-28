@@ -18,7 +18,8 @@ pub use modules::ModulesRepository;
 pub use pool::{build_pool, create_connect_options};
 pub use settings::SettingsRepository;
 pub use submissions::{
-    SubmissionChanges, SubmissionData, SubmissionsRepository, UpsertSubmissionResult,
+    GradedSubmissionItem, SubmissionChanges, SubmissionData, SubmissionsRepository,
+    UpsertSubmissionResult,
 };
 pub use users::{AdmissionResult, UsersRepository};
 
