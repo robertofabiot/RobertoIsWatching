@@ -19,3 +19,7 @@ target/
 
 # Logs del sistema
 *.log
+
+# Carpetas y metadatos de agentes AI
+.agents/
+
