@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone)]
 pub struct Config {
     pub bot_token: String,
     pub admin_chat_id: i64,
@@ -10,6 +10,19 @@ pub struct Config {
     pub max_users_default: u32,
     pub bot_tz: chrono_tz::Tz,
     pub rust_log: String,
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("bot_token", &"***")
+            .field("admin_chat_id", &self.admin_chat_id)
+            .field("database_url", &self.database_url)
+            .field("max_users_default", &self.max_users_default)
+            .field("bot_tz", &self.bot_tz)
+            .field("rust_log", &self.rust_log)
+            .finish()
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
