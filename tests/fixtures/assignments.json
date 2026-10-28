@@ -1,0 +1,743 @@
+{
+  "courses": [
+    {
+      "id": 8233,
+      "fullname": "CNU0525 - PROGRAMACION DE APLICACIONES DE ESCRITORIO - GRUPO 2",
+      "shortname": "2026-2-LTEC05-CNU0525-2-110524",
+      "timemodified": 1787749648,
+      "assignments": [
+        {
+          "id": 68822,
+          "cmid": 979333,
+          "course": 8233,
+          "name": "Laboratorio | Construcción de interfaz gráfica funcional",
+          "nosubmissions": 0,
+          "submissiondrafts": 0,
+          "sendnotifications": 0,
+          "sendlatenotifications": 0,
+          "sendstudentnotifications": 1,
+          "duedate": 1788380700,
+          "allowsubmissionsfromdate": 1788376200,
+          "grade": 30,
+          "timemodified": 1788377802,
+          "completionsubmit": 0,
+          "cutoffdate": 1788381000,
+          "gradingduedate": 0,
+          "teamsubmission": 1,
+          "requireallteammemberssubmit": 0,
+          "teamsubmissiongroupingid": 2971,
+          "blindmarking": 0,
+          "hidegrader": 0,
+          "revealidentities": 0,
+          "attemptreopenmethod": "untilpass",
+          "maxattempts": 1,
+          "markingworkflow": 0,
+          "markingallocation": 0,
+          "markinganonymous": 0,
+          "requiresubmissionstatement": 0,
+          "preventsubmissionnotingroup": 1,
+          "configs": [
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "wordlimit",
+              "value": "0"
+            },
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "wordlimitenabled",
+              "value": "0"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "commentinline",
+              "value": "0"
+            },
+            {
+              "plugin": "editpdf",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "file",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            }
+          ],
+          "intro": "<div class=\"container-fluid\">\r\n<div class=\"bg-primary text-white p-4 rounded mb-4\">\r\n<h2>Evaluación sistemática: JavaFX</h2>\r\n<p class=\"mb-0\">Desarrollo de una aplicación de escritorio con Scene Builder, controles, eventos y menús.</p>\r\n</div>\r\n<div class=\"alert alert-info\"><strong>Modalidad:</strong> parejas | <strong>Valor:</strong> 30 puntos | <strong>Herramientas:</strong> IntelliJ IDEA, JavaFX y Scene Builder.</div>\r\n<h3>Orientaciones generales</h3>\r\n<ol>\r\n<li>Desarrolle <strong>el casos de estudio, seleccionado por el docente</strong>.</li>\r\n<li>Diseñe la interfaz en Scene Builder mediante un archivo FXML.</li>\r\n<li>Guarde los datos temporalmente en una <code>ObservableList</code>. No se requiere base de datos.</li>\r\n<li>La aplicación debe permitir registrar, mostrar, seleccionar, actualizar y eliminar datos.</li>\r\n<li>Organice el proyecto en los paquetes <code>controllers</code>, <code>models</code> y <code>utils</code>.</li>\r\n</ol>\r\n<h3 class=\"mt-4\">Caso 1: Sistema de matrícula</h3>\r\n<div class=\"card mb-4\">\r\n<div class=\"card-header bg-primary text-white\">Centro Nicaragüense de Formación Tecnológica</div>\r\n<div class=\"card-body\">\r\n<p>El centro necesita una aplicación para registrar estudiantes en sus cursos de programación, Excel, redes y diseño gráfico.</p>\r\n<h4>Datos y controles requeridos</h4>\r\n<div class=\"table-responsive\">\r\n<table class=\"table table-bordered table-striped\">\r\n<thead class=\"table-dark\">\r\n<tr>\r\n<th>Información</th>\r\n<th>Control JavaFX</th>\r\n</tr>\r\n</thead>\r\n<tbody>\r\n<tr>\r\n<td>Nombres, apellidos y usuario</td>\r\n<td>TextField</td>\r\n</tr>\r\n<tr>\r\n<td>Contraseña</td>\r\n<td>PasswordField</td>\r\n</tr>\r\n<tr>\r\n<td>Fecha de nacimiento</td>\r\n<td>DatePicker</td>\r\n</tr>\r\n<tr>\r\n<td>Departamento</td>\r\n<td>ComboBox</td>\r\n</tr>\r\n<tr>\r\n<td>Curso</td>\r\n<td>ListView</td>\r\n</tr>\r\n<tr>\r\n<td>Modalidad presencial o virtual</td>\r\n<td>RadioButton</td>\r\n</tr>\r\n<tr>\r\n<td>Horarios y aceptación de normas</td>\r\n<td>CheckBox</td>\r\n</tr>\r\n<tr>\r\n<td>Logotipo del centro</td>\r\n<td>ImageView</td>\r\n</tr>\r\n</tbody>\r\n</table>\r\n</div>\r\n<p><strong>TableView:</strong> muestre nombre completo, departamento, curso, modalidad, horario y fecha de nacimiento.</p>\r\n<p><strong>Validaciones:</strong> ningún campo puede quedar vacío; el usuario debe tener al menos 5 caracteres; la contraseña, 8 caracteres; se debe elegir curso, modalidad, horario y aceptar las normas. Muestre los errores mediante <code>Alert</code>.</p>\r\n</div>\r\n</div>\r\n<h3>Caso 2: Sistema de registro de colaboradores</h3>\r\n<div class=\"card mb-4\">\r\n<div class=\"card-header bg-primary text-white\">Distribuidora El Güegüense</div>\r\n<div class=\"card-body\">\r\n<p>La empresa necesita una aplicación para registrar y consultar la información básica de sus colaboradores.</p>\r\n<h4>Datos y controles requeridos</h4>\r\n<div class=\"table-responsive\">\r\n<table class=\"table table-bordered table-striped\">\r\n<thead class=\"table-dark\">\r\n<tr>\r\n<th>Información</th>\r\n<th>Control JavaFX</th>\r\n</tr>\r\n</thead>\r\n<tbody>\r\n<tr>\r\n<td>Nombres, apellidos y usuario</td>\r\n<td>TextField</td>\r\n</tr>\r\n<tr>\r\n<td>Contraseña temporal</td>\r\n<td>PasswordField</td>\r\n</tr>\r\n<tr>\r\n<td>Cargo</td>\r\n<td>ComboBox</td>\r\n</tr>\r\n<tr>\r\n<td>Área de trabajo</td>\r\n<td>ListView</td>\r\n</tr>\r\n<tr>\r\n<td>Fecha de contratación</td>\r\n<td>DatePicker</td>\r\n</tr>\r\n<tr>\r\n<td>Tipo de contrato</td>\r\n<td>RadioButton</td>\r\n</tr>\r\n<tr>\r\n<td>Beneficios</td>\r\n<td>CheckBox</td>\r\n</tr>\r\n<tr>\r\n<td>Imagen institucional</td>\r\n<td>ImageView</td>\r\n</tr>\r\n</tbody>\r\n</table>\r\n</div>\r\n<p><strong>TableView:</strong> muestre nombre completo, cargo, área, fecha de contratación, tipo de contrato y beneficios.</p>\r\n<p><strong>Validaciones:</strong> ningún campo puede quedar vacío; el usuario debe tener al menos 5 caracteres; la contraseña, 8 caracteres; la fecha de contratación no puede ser posterior a la fecha actual y se debe seleccionar al menos un beneficio.</p>\r\n</div>\r\n</div>\r\n<h3>Eventos obligatorios para ambos casos</h3>\r\n<ul class=\"list-group mb-4\">\r\n<li class=\"list-group-item\"><strong>ActionEvent:</strong> botones Guardar, Actualizar, Limpiar y Eliminar.</li>\r\n<li class=\"list-group-item\"><strong>MouseEvent:</strong> doble clic en una fila del TableView para cargar los datos.</li>\r\n<li class=\"list-group-item\"><strong>KeyEvent:</strong> utilizar Enter o Escape para ejecutar una acción.</li>\r\n</ul>\r\n<h3>Menús obligatorios</h3>\r\n<ul>\r\n<li><strong>MenuBar:</strong> Nuevo, Salir y Acerca de.</li>\r\n<li><strong>ToolBar:</strong> Guardar, Limpiar y Eliminar.</li>\r\n<li><strong>ContextMenu:</strong> Editar y Eliminar sobre el TableView.</li>\r\n</ul>\r\n<h3 class=\"mt-4\">Entrega</h3>\r\n<div class=\"alert alert-warning\">\r\n<ul class=\"mb-0\">\r\n<li>Enlace público del repositorio de GitHub.</li>\r\n<li>Proyecto completo y ejecutable en IntelliJ IDEA.</li>\r\n<li>README con descripción, integrantes, instrucciones y capturas.</li>\r\n<li>Commits que evidencien la participación de ambos integrantes.</li>\r\n<li>Demostración del funcionamiento de la aplicación.</li>\r\n</ul>\r\n</div>\r\n<div class=\"alert alert-danger\"><strong>Importante:</strong> no se aceptará una aplicación que solamente presente el diseño. Debe registrar, mostrar, actualizar y eliminar información correctamente.</div>\r\n</div>",
+          "introformat": 1,
+          "introfiles": [],
+          "introattachments": [],
+          "timelimit": 0,
+          "submissionattachments": 0
+        },
+        {
+          "id": 69201,
+          "cmid": 981030,
+          "course": 8233,
+          "name": "Practica de Menu",
+          "nosubmissions": 0,
+          "submissiondrafts": 0,
+          "sendnotifications": 0,
+          "sendlatenotifications": 0,
+          "sendstudentnotifications": 1,
+          "duedate": 1788498000,
+          "allowsubmissionsfromdate": 1788415200,
+          "grade": 0,
+          "timemodified": 1788461380,
+          "completionsubmit": 0,
+          "cutoffdate": 0,
+          "gradingduedate": 0,
+          "teamsubmission": 0,
+          "requireallteammemberssubmit": 0,
+          "teamsubmissiongroupingid": 0,
+          "blindmarking": 0,
+          "hidegrader": 0,
+          "revealidentities": 0,
+          "attemptreopenmethod": "untilpass",
+          "maxattempts": 1,
+          "markingworkflow": 0,
+          "markingallocation": 0,
+          "markinganonymous": 0,
+          "requiresubmissionstatement": 0,
+          "preventsubmissionnotingroup": 0,
+          "configs": [
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "wordlimit",
+              "value": "0"
+            },
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "wordlimitenabled",
+              "value": "0"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "commentinline",
+              "value": "0"
+            },
+            {
+              "plugin": "editpdf",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "file",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            }
+          ],
+          "intro": "<header class=\"bg-primary text-white py-4\">\n<div class=\"container\">\n<p class=\"mb-1\">Programación de Aplicaciones de Escritorio</p>\n<h1 class=\"h2 mb-2\">Práctica JavaFX: Menús y barras de herramientas</h1>\n<p class=\"mb-0\">Aplicación de MenuBar, ToolBar y ContextMenu</p>\n</div>\n</header><main class=\"container py-4\">\n<div class=\"alert alert-info\" role=\"alert\">\n<h2 class=\"h5 alert-heading\">Importante</h2>\n<p class=\"mb-0\">Esta práctica es formativa, no tiene puntaje. Su propósito es experimentar con diferentes formas de ejecutar acciones dentro de una aplicación JavaFX.</p>\n</div>\n<section class=\"card shadow-sm mb-4\">\n<div class=\"card-body\">\n<h2 class=\"h4 text-primary\">Propósito de la práctica</h2>\n<p class=\"mb-0\">Construir una aplicación de escritorio en JavaFX que permita administrar una lista de productos y ejecutar sus operaciones mediante un menú superior, una barra de herramientas y un menú contextual.</p>\n</div>\n</section>\n<section class=\"card shadow-sm mb-4\">\n<div class=\"card-header bg-primary text-white\">\n<h2 class=\"h5 mb-0\">Caso de estudio</h2>\n</div>\n<div class=\"card-body\">\n<p>La empresa nicaragüense <strong>Distribuidora El Güegüense</strong> necesita una aplicación sencilla para organizar los productos disponibles en su inventario.</p>\n<p>De cada producto se registrarán los siguientes datos:</p>\n<ul class=\"mb-0\">\n<li>Código</li>\n<li>Nombre</li>\n<li>Categoría</li>\n<li>Precio</li>\n<li>Existencia</li>\n</ul>\n</div>\n</section>\n<section class=\"card shadow-sm mb-4\">\n<div class=\"card-header bg-primary text-white\">\n<h2 class=\"h5 mb-0\">Preparación</h2>\n</div>\n<div class=\"card-body\">\n<ol class=\"mb-0\">\n<li>Cree un proyecto JavaFX en IntelliJ IDEA.</li>\n<li>Agregue un archivo FXML y ábralo con Scene Builder.</li>\n<li>Cree la clase <code>Producto</code> con sus atributos, constructor, getters y setters.</li>\n<li>Cree un controlador para atender las acciones de la interfaz.</li>\n<li>Utilice una <code>ObservableList&lt;Producto&gt;</code> para almacenar temporalmente los productos.</li>\n</ol>\n</div>\n</section>\n<section class=\"mb-4\">\n<h2 class=\"h4 text-primary mb-3\">Actividades</h2>\n<div id=\"actividades\" class=\"accordion\">\n<div class=\"accordion-item\">\n<h3 class=\"accordion-header\"><button class=\"accordion-button\" type=\"button\" data-bs-toggle=\"collapse\" data-bs-target=\"#actividad1\" aria-expanded=\"true\" aria-controls=\"actividad1\"> Actividad 1: Diseñar la interfaz </button></h3>\n<div id=\"actividad1\" class=\"accordion-collapse collapse show\" data-bs-parent=\"#actividades\">\n<div class=\"accordion-body\">\n<p>Diseñe una ventana que contenga:</p>\n<ul class=\"mb-0\">\n<li>Un <code>MenuBar</code> en la parte superior.</li>\n<li>Un <code>ToolBar</code> debajo del menú.</li>\n<li>Campos para ingresar los datos del producto.</li>\n<li>Una <code>TableView</code> para mostrar los productos.</li>\n<li>Una etiqueta para informar el resultado de las acciones.</li>\n</ul>\n</div>\n</div>\n</div>\n<div class=\"accordion-item\">\n<h3 class=\"accordion-header\"><button class=\"accordion-button collapsed\" type=\"button\" data-bs-toggle=\"collapse\" data-bs-target=\"#actividad2\" aria-expanded=\"false\" aria-controls=\"actividad2\"> Actividad 2: Crear el MenuBar </button></h3>\n<div id=\"actividad2\" class=\"accordion-collapse collapse\" data-bs-parent=\"#actividades\">\n<div class=\"accordion-body\">\n<p>Agregue la siguiente estructura de menús:</p>\n<div class=\"table-responsive\">\n<table class=\"table table-bordered table-striped align-middle\">\n<thead class=\"table-dark\">\n<tr>\n<th>Menú</th>\n<th>Opciones</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>Archivo</td>\n<td>Nuevo, Limpiar y Salir</td>\n</tr>\n<tr>\n<td>Producto</td>\n<td>Guardar, Editar y Eliminar</td>\n</tr>\n<tr>\n<td>Ayuda</td>\n<td>Acerca de</td>\n</tr>\n</tbody>\n</table>\n</div>\n<p class=\"mb-0\">Programe cada <code>MenuItem</code> para que ejecute la acción correspondiente. La opción <strong>Salir</strong> debe solicitar confirmación y <strong>Acerca de</strong> debe mostrar un <code>Alert</code> con los datos de la aplicación y sus autores.</p>\n</div>\n</div>\n</div>\n<div class=\"accordion-item\">\n<h3 class=\"accordion-header\"><button class=\"accordion-button collapsed\" type=\"button\" data-bs-toggle=\"collapse\" data-bs-target=\"#actividad3\" aria-expanded=\"false\" aria-controls=\"actividad3\"> Actividad 3: Crear el ToolBar </button></h3>\n<div id=\"actividad3\" class=\"accordion-collapse collapse\" data-bs-parent=\"#actividades\">\n<div class=\"accordion-body\">\n<p>Agregue al <code>ToolBar</code> cuatro botones:</p>\n<div class=\"d-flex flex-wrap gap-2 mb-3\"><span class=\"badge text-bg-primary\">Nuevo</span> <span class=\"badge text-bg-success\">Guardar</span> <span class=\"badge text-bg-warning\">Editar</span> <span class=\"badge text-bg-danger\">Eliminar</span></div>\n<p class=\"mb-0\">Los botones deben ejecutar las mismas operaciones disponibles en el <code>MenuBar</code>. Reutilice los métodos del controlador para evitar repetir código.</p>\n</div>\n</div>\n</div>\n<div class=\"accordion-item\">\n<h3 class=\"accordion-header\"><button class=\"accordion-button collapsed\" type=\"button\" data-bs-toggle=\"collapse\" data-bs-target=\"#actividad4\" aria-expanded=\"false\" aria-controls=\"actividad4\"> Actividad 4: Crear el ContextMenu </button></h3>\n<div id=\"actividad4\" class=\"accordion-collapse collapse\" data-bs-parent=\"#actividades\">\n<div class=\"accordion-body\">\n<p>Asocie un <code>ContextMenu</code> a la <code>TableView</code>. Al hacer clic derecho sobre un producto, muestre estas opciones:</p>\n<ul>\n<li>Editar producto</li>\n<li>Eliminar producto</li>\n<li>Ver detalle</li>\n</ul>\n<p class=\"mb-0\"><strong>Ver detalle</strong> debe mostrar todos los datos del producto seleccionado mediante un <code>Alert</code>. Si no existe una selección, la aplicación debe informar al usuario y continuar funcionando.</p>\n</div>\n</div>\n</div>\n<div class=\"accordion-item\">\n<h3 class=\"accordion-header\"><button class=\"accordion-button collapsed\" type=\"button\" data-bs-toggle=\"collapse\" data-bs-target=\"#actividad5\" aria-expanded=\"false\" aria-controls=\"actividad5\"> Actividad 5: Comprobar el funcionamiento </button></h3>\n<div id=\"actividad5\" class=\"accordion-collapse collapse\" data-bs-parent=\"#actividades\">\n<div class=\"accordion-body\">\n<ol class=\"mb-0\">\n<li>Registre al menos cinco productos.</li>\n<li>Guarde un producto desde el menú superior.</li>\n<li>Guarde otro producto desde la barra de herramientas.</li>\n<li>Edite un producto desde el menú contextual.</li>\n<li>Consulte el detalle de un producto.</li>\n<li>Elimine un producto y confirme la operación.</li>\n<li>Intente editar o eliminar sin seleccionar una fila y compruebe el mensaje mostrado.</li>\n</ol>\n</div>\n</div>\n</div>\n</div>\n</section>\n<section class=\"card border-primary mb-4\">\n<div class=\"card-header bg-primary text-white\">\n<h2 class=\"h5 mb-0\">Regla importante de programación</h2>\n</div>\n<div class=\"card-body\">\n<p>Una misma operación debe reutilizar un único método. Por ejemplo, el botón <strong>Eliminar</strong> del <code>ToolBar</code>, la opción <strong>Eliminar</strong> del <code>MenuBar</code> y la opción <strong>Eliminar</strong> del <code>ContextMenu</code> deben llamar al mismo método.</p>\n<pre class=\"bg-primary text-white p-3 rounded mb-0\"><code>@FXML\nprivate void eliminarProducto() {\n    // Validar la selección, confirmar y eliminar el producto.\n}</code></pre>\n</div>\n</section>\n<section class=\"card shadow-sm mb-4\">\n<div class=\"card-header bg-success text-white\">\n<h2 class=\"h5 mb-0\">Reto adicional</h2>\n</div>\n<div class=\"card-body\">\n<p class=\"mb-0\">Agregue combinaciones de teclas al menú: <kbd>Ctrl</kbd> + <kbd>N</kbd> para crear un nuevo registro, <kbd>Ctrl</kbd> + <kbd>G</kbd> para guardar y <kbd>Ctrl</kbd> + <kbd>Q</kbd> para salir.</p>\n</div>\n</section>\n<section class=\"card shadow-sm\">\n<div class=\"card-header bg-primary text-white\">\n<h2 class=\"h5 mb-0\">Producto esperado</h2>\n</div>\n<div class=\"card-body\">\n<p>Al finalizar, muestre al docente la aplicación funcionando y explique:</p>\n<ul class=\"mb-0\">\n<li>Qué función cumple cada tipo de menú.</li>\n<li>Cómo se asociaron los eventos con el controlador.</li>\n<li>Cómo se reutilizaron los métodos entre los distintos controles.</li>\n<li>Qué ocurre cuando el usuario intenta ejecutar una acción sin seleccionar un producto.</li>\n</ul>\n</div>\n</section>\n</main><footer class=\"bg-primary text-white text-center py-3 mt-4\">\n<p class=\"mb-0\">Práctica formativa de JavaFX</p>\n</footer>\n<p>\n<script src=\"https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js\">\n  </script>\n</p>",
+          "introformat": 1,
+          "introfiles": [],
+          "introattachments": [],
+          "timelimit": 0,
+          "submissionattachments": 0
+        },
+        {
+          "id": 70860,
+          "cmid": 991780,
+          "course": 8233,
+          "name": "Caso práctico | Eventos, navegación y paso de datos",
+          "nosubmissions": 0,
+          "submissiondrafts": 0,
+          "sendnotifications": 0,
+          "sendlatenotifications": 0,
+          "sendstudentnotifications": 0,
+          "duedate": 1789678200,
+          "allowsubmissionsfromdate": 1789452000,
+          "grade": 30,
+          "timemodified": 1789587234,
+          "completionsubmit": 0,
+          "cutoffdate": 1789678800,
+          "gradingduedate": 0,
+          "teamsubmission": 1,
+          "requireallteammemberssubmit": 0,
+          "teamsubmissiongroupingid": 3049,
+          "blindmarking": 0,
+          "hidegrader": 0,
+          "revealidentities": 0,
+          "attemptreopenmethod": "untilpass",
+          "maxattempts": 1,
+          "markingworkflow": 0,
+          "markingallocation": 0,
+          "markinganonymous": 0,
+          "requiresubmissionstatement": 0,
+          "preventsubmissionnotingroup": 1,
+          "configs": [
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "wordlimit",
+              "value": "0"
+            },
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "wordlimitenabled",
+              "value": "0"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "commentinline",
+              "value": "0"
+            },
+            {
+              "plugin": "editpdf",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "file",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            }
+          ],
+          "intro": "<p>Comparta el link de su repositorio público.</p>\r\n<p>Recuede que:</p>\r\n<ul>\r\n<li>La aplicación no necesita implementar una base de datos. Los datos pueden mantenerse temporalmente en memoria para demostrar el funcionamiento de la navegación y el paso de información entre ventanas.</li>\r\n<li>Se evaluará principalmente la <strong>aplicación correcta de los conceptos estudiados</strong>, la funcionalidad de la aplicación y la capacidad de los integrantes para explicar cómo fueron implementados los eventos, la navegación y el paso de datos.</li>\r\n<li class=\"mb-0\">La interfaz deberá presentar una distribución clara de los componentes y evitar elementos innecesarios que dificulten la utilización del sistema.</li>\r\n<li class=\"mb-0\">Durante la defensa, cualquier integrante podrá ser seleccionado para explicar el funcionamiento de una parte del código o demostrar una funcionalidad específica.</li>\r\n</ul>",
+          "introformat": 1,
+          "introfiles": [],
+          "introattachments": [],
+          "timelimit": 0,
+          "submissionattachments": 0
+        },
+        {
+          "id": 72218,
+          "cmid": 998669,
+          "course": 8233,
+          "name": "I Corte",
+          "nosubmissions": 0,
+          "submissiondrafts": 0,
+          "sendnotifications": 0,
+          "sendlatenotifications": 0,
+          "sendstudentnotifications": 1,
+          "duedate": 1790117400,
+          "allowsubmissionsfromdate": 1790056800,
+          "grade": 40,
+          "timemodified": 1790111808,
+          "completionsubmit": 0,
+          "cutoffdate": 1790117940,
+          "gradingduedate": 0,
+          "teamsubmission": 1,
+          "requireallteammemberssubmit": 0,
+          "teamsubmissiongroupingid": 3049,
+          "blindmarking": 0,
+          "hidegrader": 0,
+          "revealidentities": 0,
+          "attemptreopenmethod": "untilpass",
+          "maxattempts": 1,
+          "markingworkflow": 0,
+          "markingallocation": 0,
+          "markinganonymous": 0,
+          "requiresubmissionstatement": 0,
+          "preventsubmissionnotingroup": 1,
+          "configs": [
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "wordlimit",
+              "value": "0"
+            },
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "wordlimitenabled",
+              "value": "0"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "commentinline",
+              "value": "0"
+            },
+            {
+              "plugin": "editpdf",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "file",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            }
+          ],
+          "intro": "<div class=\"activity-header\" data-for=\"page-activity-header\">\r\n<div id=\"intro\" class=\"activity-description\">\r\n<div class=\"box py-3 generalbox boxaligncenter\">\r\n<div class=\"no-overflow\">\r\n<p>Comparta el link con el repositorio público</p>\r\n</div>\r\n</div>\r\n</div>\r\n</div>\r\n<div class=\"main-content\" role=\"main\">\r\n<div class=\"container-fluid tertiary-navigation\">\r\n<div class=\"row\">\r\n<div class=\"navitem\"> </div>\r\n</div>\r\n</div>\r\n<div class=\"gradingsummary\"> </div>\r\n</div>",
+          "introformat": 1,
+          "introfiles": [],
+          "introattachments": [],
+          "timelimit": 0,
+          "submissionattachments": 0
+        },
+        {
+          "id": 74578,
+          "cmid": 1011463,
+          "course": 8233,
+          "name": "Laboratorio | Acceso a datos y visualización en TableView",
+          "nosubmissions": 0,
+          "submissiondrafts": 0,
+          "sendnotifications": 0,
+          "sendlatenotifications": 0,
+          "sendstudentnotifications": 1,
+          "duedate": 1791403200,
+          "allowsubmissionsfromdate": 1791352800,
+          "grade": 30,
+          "timemodified": 1791400644,
+          "completionsubmit": 0,
+          "cutoffdate": 1791403500,
+          "gradingduedate": 0,
+          "teamsubmission": 0,
+          "requireallteammemberssubmit": 0,
+          "teamsubmissiongroupingid": 0,
+          "blindmarking": 0,
+          "hidegrader": 0,
+          "revealidentities": 0,
+          "attemptreopenmethod": "untilpass",
+          "maxattempts": 1,
+          "markingworkflow": 0,
+          "markingallocation": 0,
+          "markinganonymous": 0,
+          "requiresubmissionstatement": 0,
+          "preventsubmissionnotingroup": 0,
+          "configs": [
+            {
+              "plugin": "file",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "file",
+              "subtype": "assignsubmission",
+              "name": "maxfilesubmissions",
+              "value": "10"
+            },
+            {
+              "plugin": "file",
+              "subtype": "assignsubmission",
+              "name": "maxsubmissionsizebytes",
+              "value": "10485760"
+            },
+            {
+              "plugin": "file",
+              "subtype": "assignsubmission",
+              "name": "filetypeslist",
+              "value": ""
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "commentinline",
+              "value": "0"
+            },
+            {
+              "plugin": "editpdf",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "file",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            }
+          ],
+          "intro": "<p>Estimado joven suba el archivo pdf descargado del laboratorio</p>",
+          "introformat": 1,
+          "introfiles": [],
+          "introattachments": [],
+          "timelimit": 0,
+          "submissionattachments": 0
+        },
+        {
+          "id": 75540,
+          "cmid": 1016944,
+          "course": 8233,
+          "name": "Módulo CRUD completo",
+          "nosubmissions": 0,
+          "submissiondrafts": 0,
+          "sendnotifications": 0,
+          "sendlatenotifications": 0,
+          "sendstudentnotifications": 1,
+          "duedate": 1792094400,
+          "allowsubmissionsfromdate": 1791698400,
+          "grade": 0,
+          "timemodified": 1792707124,
+          "completionsubmit": 0,
+          "cutoffdate": 1792098000,
+          "gradingduedate": 0,
+          "teamsubmission": 1,
+          "requireallteammemberssubmit": 0,
+          "teamsubmissiongroupingid": 3049,
+          "blindmarking": 0,
+          "hidegrader": 0,
+          "revealidentities": 0,
+          "attemptreopenmethod": "untilpass",
+          "maxattempts": 1,
+          "markingworkflow": 0,
+          "markingallocation": 0,
+          "markinganonymous": 0,
+          "requiresubmissionstatement": 0,
+          "preventsubmissionnotingroup": 1,
+          "configs": [
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "wordlimit",
+              "value": "0"
+            },
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "wordlimitenabled",
+              "value": "0"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "commentinline",
+              "value": "0"
+            },
+            {
+              "plugin": "editpdf",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "file",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            }
+          ],
+          "intro": "<h1><span style=\"mso-ansi-language: ES;\">1. Propósito e indicadores de logro</span></h1>\r\n<p class=\"MsoNormal\"><span style=\"mso-ansi-language: ES;\">Construir y demostrar una aplicación JavaFX funcional, conectada con PostgreSQL mediante JDBC, que implemente operaciones CRUD, consultas, visualización, búsqueda, filtros y validación de datos.</span></p>\r\n<p class=\"MsoNormal\"><span style=\"mso-ansi-language: ES;\">IL2.1. Establece conexiones entre la aplicación y una base de datos utilizando las clases correspondientes.<br>IL2.2. Implementa operaciones CRUD mediante sentencias SQL y controles de acceso a datos.<br>IL2.3. Valida y gestiona la información almacenada garantizando su consistencia.</span></p>\r\n<h1><span style=\"mso-ansi-language: ES;\">2. Organización y reglas de trabajo</span></h1>\r\n<p class=\"MsoNormal\"><span style=\"mso-ansi-language: ES;\">• Los equipos estarán integrados por un mínimo de 1 y un máximo de 4 estudiantes. No se admitirán equipos de 5 o más personas.</span></p>\r\n<p class=\"MsoNormal\"><span style=\"mso-ansi-language: ES;\">• Cada equipo deberá crear un único repositorio GitHub denominado Evaluacion_JavaFX_CitasTecnicas. El repositorio deberá ser accesible al docente desde el 12 de octubre.</span></p>\r\n<p class=\"MsoNormal\"><span style=\"mso-ansi-language: ES;\">• Cada integrante debe disponer de su propia cuenta GitHub y contribuir al repositorio mediante commits propios, identificables en el historial. No se aceptará un único usuario para representar el trabajo de todo el equipo.</span></p>\r\n<p class=\"MsoNormal\"><span style=\"mso-ansi-language: ES;\">• El equipo debe registrar en el README los nombres completos de sus integrantes, sus usuarios GitHub y la distribución de responsabilidades. Las contribuciones deberán corresponder a funcionalidades reales; no basta con incluir nombres en el README.</span></p>\r\n<p class=\"MsoNormal\"><span style=\"mso-ansi-language: ES;\">• El desarrollo inicia el 12/10/2026 y concluye el 15/10/2026. El último commit evaluable será el que exista al momento de la revisión final del docente en la tercera sesión.</span></p>\r\n<p class=\"MsoNormal\"><span style=\"mso-ansi-language: ES;\">• No se permite sustituir JDBC por Hibernate, JPA u otro ORM. La defensa se realizará ejecutando la aplicación en IntelliJ IDEA con una base PostgreSQL real.</span></p>",
+          "introformat": 1,
+          "introfiles": [],
+          "introattachments": [
+            {
+              "filename": "Evaluacion_Practica_JavaFX_JDBC_CitasTecnicas.docx",
+              "filepath": "/",
+              "filesize": 38021,
+              "fileurl": "https://uamvirtual.uam.edu.ni/grado/webservice/pluginfile.php/1225073/mod_assign/introattachment/0/Evaluacion_Practica_JavaFX_JDBC_CitasTecnicas.docx",
+              "timemodified": 1791906335,
+              "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "isexternalfile": false,
+              "icon": "f/document"
+            }
+          ],
+          "timelimit": 0,
+          "submissionattachments": 0
+        },
+        {
+          "id": 76036,
+          "cmid": 1019199,
+          "course": 8233,
+          "name": "Evaluación práctica | Módulo CRUD completo",
+          "nosubmissions": 0,
+          "submissiondrafts": 0,
+          "sendnotifications": 0,
+          "sendlatenotifications": 0,
+          "sendstudentnotifications": 1,
+          "duedate": 1792104600,
+          "allowsubmissionsfromdate": 1792044000,
+          "grade": 30,
+          "timemodified": 1792707170,
+          "completionsubmit": 0,
+          "cutoffdate": 1792104900,
+          "gradingduedate": 0,
+          "teamsubmission": 0,
+          "requireallteammemberssubmit": 0,
+          "teamsubmissiongroupingid": 0,
+          "blindmarking": 0,
+          "hidegrader": 0,
+          "revealidentities": 0,
+          "attemptreopenmethod": "untilpass",
+          "maxattempts": 1,
+          "markingworkflow": 0,
+          "markingallocation": 0,
+          "markinganonymous": 0,
+          "requiresubmissionstatement": 0,
+          "preventsubmissionnotingroup": 0,
+          "configs": [
+            {
+              "plugin": "file",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "file",
+              "subtype": "assignsubmission",
+              "name": "maxfilesubmissions",
+              "value": "10"
+            },
+            {
+              "plugin": "file",
+              "subtype": "assignsubmission",
+              "name": "maxsubmissionsizebytes",
+              "value": "10485760"
+            },
+            {
+              "plugin": "file",
+              "subtype": "assignsubmission",
+              "name": "filetypeslist",
+              "value": ""
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "commentinline",
+              "value": "0"
+            },
+            {
+              "plugin": "editpdf",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "file",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            }
+          ],
+          "intro": "<p>Comparta el archivo PDF</p>",
+          "introformat": 1,
+          "introfiles": [],
+          "introattachments": [],
+          "timelimit": 0,
+          "submissionattachments": 0
+        },
+        {
+          "id": 77249,
+          "cmid": 1025869,
+          "course": 8233,
+          "name": "Práctica - Laboratorio de Hilos",
+          "nosubmissions": 0,
+          "submissiondrafts": 0,
+          "sendnotifications": 0,
+          "sendlatenotifications": 0,
+          "sendstudentnotifications": 1,
+          "duedate": 1792708800,
+          "allowsubmissionsfromdate": 1792648800,
+          "grade": 0,
+          "timemodified": 1792700333,
+          "completionsubmit": 0,
+          "cutoffdate": 1792709400,
+          "gradingduedate": 0,
+          "teamsubmission": 1,
+          "requireallteammemberssubmit": 0,
+          "teamsubmissiongroupingid": 3216,
+          "blindmarking": 0,
+          "hidegrader": 0,
+          "revealidentities": 0,
+          "attemptreopenmethod": "untilpass",
+          "maxattempts": 1,
+          "markingworkflow": 0,
+          "markingallocation": 0,
+          "markinganonymous": 0,
+          "requiresubmissionstatement": 0,
+          "preventsubmissionnotingroup": 1,
+          "configs": [
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "wordlimit",
+              "value": "0"
+            },
+            {
+              "plugin": "onlinetext",
+              "subtype": "assignsubmission",
+              "name": "wordlimitenabled",
+              "value": "0"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignsubmission",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "comments",
+              "subtype": "assignfeedback",
+              "name": "commentinline",
+              "value": "0"
+            },
+            {
+              "plugin": "editpdf",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            },
+            {
+              "plugin": "file",
+              "subtype": "assignfeedback",
+              "name": "enabled",
+              "value": "1"
+            }
+          ],
+          "intro": "<p>Descargue el archivo y siga las instrucciones.</p>",
+          "introformat": 1,
+          "introfiles": [],
+          "introattachments": [
+            {
+              "filename": "Laboratorio_Guiado_Concurrencia_JavaFX_GitHub.docx",
+              "filepath": "/",
+              "filesize": 37156,
+              "fileurl": "https://uamvirtual.uam.edu.ni/grado/webservice/pluginfile.php/1234287/mod_assign/introattachment/0/Laboratorio_Guiado_Concurrencia_JavaFX_GitHub.docx",
+              "timemodified": 1792700298,
+              "mimetype": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "isexternalfile": false,
+              "icon": "f/document"
+            }
+          ],
+          "timelimit": 0,
+          "submissionattachments": 0
+        }
+      ]
+    }
+  ],
+  "warnings": []
+}

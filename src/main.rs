@@ -1,14 +1,5 @@
-#![allow(dead_code)]
-
-mod bot;
-mod config;
-mod moodle;
-mod scheduler;
-mod services;
-mod storage;
-mod telemetry;
-
-use config::Config;
+use robertos_watching_bot::config::Config;
+use robertos_watching_bot::{storage, telemetry};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
@@ -21,6 +12,17 @@ async fn main() {
     };
 
     telemetry::init(&config.rust_log);
+
+    let _pool = match storage::init(&config).await {
+        Ok(pool) => {
+            tracing::info!("Capa de persistencia SQLite inicializada con éxito.");
+            pool
+        }
+        Err(err) => {
+            tracing::error!("Error crítico al inicializar la base de datos: {err}");
+            std::process::exit(1);
+        }
+    };
 
     tracing::info!(
         admin_chat_id = config.admin_chat_id,

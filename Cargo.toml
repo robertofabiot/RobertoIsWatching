@@ -7,7 +7,8 @@ edition = "2021"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal"] }
 teloxide = { version = "0.17", default-features = false, features = ["macros", "throttle", "rustls", "ctrlc_handler"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }   # sin "cookies" (A-10)
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "chrono"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "chrono", "macros"] }
+
 zeroize = { version = "1.8", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

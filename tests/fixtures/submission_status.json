@@ -1,0 +1,257 @@
+{
+  "lastattempt": {
+    "submission": {
+      "id": 1755771,
+      "userid": 9999,
+      "attemptnumber": 0,
+      "timecreated": 1788380514,
+      "timemodified": 1788380514,
+      "timestarted": null,
+      "status": "submitted",
+      "groupid": 0,
+      "assignment": 68822,
+      "latest": 1,
+      "plugins": [
+        {
+          "type": "onlinetext",
+          "name": "Texto en línea",
+          "fileareas": [
+            {
+              "area": "submissions_onlinetext",
+              "files": []
+            }
+          ],
+          "editorfields": [
+            {
+              "name": "onlinetext",
+              "description": "Entregas de texto en línea",
+              "text": "",
+              "format": 0
+            }
+          ]
+        },
+        {
+          "type": "comments",
+          "name": "Comentarios de la entrega"
+        }
+      ]
+    },
+    "teamsubmission": {
+      "id": 1755399,
+      "userid": 0,
+      "attemptnumber": 0,
+      "timecreated": 1788377501,
+      "timemodified": 1788380514,
+      "timestarted": null,
+      "status": "submitted",
+      "groupid": 32063,
+      "assignment": 68822,
+      "latest": 1,
+      "plugins": [
+        {
+          "type": "onlinetext",
+          "name": "Texto en línea",
+          "fileareas": [
+            {
+              "area": "submissions_onlinetext",
+              "files": []
+            }
+          ],
+          "editorfields": [
+            {
+              "name": "onlinetext",
+              "description": "Entregas de texto en línea",
+              "text": "<p>Integrantes: <br /><br />- Rodolfo Ramírez <br />- Roberto Tercero</p>\r\n<p></p>\r\n<p><a href=\"https://github.com/rodolfo-collado/CasosEstudioJavaFx\">enlace</a></p>",
+              "format": 1
+            }
+          ]
+        },
+        {
+          "type": "comments",
+          "name": "Comentarios de la entrega"
+        }
+      ]
+    },
+    "submissiongroup": 32063,
+    "submissiongroupmemberswhoneedtosubmit": [],
+    "submissionsenabled": true,
+    "locked": false,
+    "graded": true,
+    "canedit": false,
+    "caneditowner": false,
+    "cansubmit": false,
+    "extensionduedate": null,
+    "timelimit": 0,
+    "blindmarking": false,
+    "gradingstatus": "graded",
+    "usergroups": [
+      32063
+    ]
+  },
+  "feedback": {
+    "grade": {
+      "id": 1519547,
+      "assignment": 68822,
+      "userid": 787,
+      "attemptnumber": 0,
+      "timecreated": 1788380606,
+      "timemodified": 1791680372,
+      "grader": 14250,
+      "grade": "30.00000"
+    },
+    "gradefordisplay": "30 / 30",
+    "gradeddate": 1791680372,
+    "plugins": [
+      {
+        "type": "comments",
+        "name": "Comentarios de retroalimentación",
+        "fileareas": [
+          {
+            "area": "feedback",
+            "files": []
+          }
+        ],
+        "editorfields": [
+          {
+            "name": "comments",
+            "description": "Comentarios de retroalimentación",
+            "text": "",
+            "format": 0
+          }
+        ]
+      },
+      {
+        "type": "editpdf",
+        "name": "Anotar PDF",
+        "fileareas": [
+          {
+            "area": "download",
+            "files": []
+          },
+          {
+            "area": "combined",
+            "files": [
+              {
+                "filename": "combined.pdf",
+                "filepath": "/",
+                "filesize": 1114,
+                "fileurl": "https://uamvirtual.uam.edu.ni/grado/webservice/pluginfile.php/1185483/assignfeedback_editpdf/combined/1519547/combined.pdf",
+                "timemodified": 1791680373,
+                "mimetype": "application/pdf",
+                "isexternalfile": false,
+                "icon": "f/pdf"
+              }
+            ]
+          },
+          {
+            "area": "partial",
+            "files": []
+          },
+          {
+            "area": "importhtml",
+            "files": []
+          },
+          {
+            "area": "pages",
+            "files": [
+              {
+                "filename": "image_page0.png",
+                "filepath": "/",
+                "filesize": 4538,
+                "fileurl": "https://uamvirtual.uam.edu.ni/grado/webservice/pluginfile.php/1185483/assignfeedback_editpdf/pages/1519547/image_page0.png",
+                "timemodified": 1791680373,
+                "mimetype": "image/png",
+                "isexternalfile": false,
+                "icon": "f/image"
+              }
+            ]
+          },
+          {
+            "area": "readonlypages",
+            "files": [
+              {
+                "filename": "image_page0.png",
+                "filepath": "/",
+                "filesize": 4538,
+                "fileurl": "https://uamvirtual.uam.edu.ni/grado/webservice/pluginfile.php/1185483/assignfeedback_editpdf/readonlypages/1519547/image_page0.png",
+                "timemodified": 1788380606,
+                "mimetype": "image/png",
+                "isexternalfile": false,
+                "icon": "f/image"
+              }
+            ]
+          },
+          {
+            "area": "stamps",
+            "files": [
+              {
+                "filename": "cross.png",
+                "filepath": "/",
+                "filesize": 861,
+                "fileurl": "https://uamvirtual.uam.edu.ni/grado/webservice/pluginfile.php/1185483/assignfeedback_editpdf/stamps/1519547/cross.png",
+                "timemodified": 1735605666,
+                "mimetype": "image/png",
+                "isexternalfile": false,
+                "icon": "f/image"
+              },
+              {
+                "filename": "sad.png",
+                "filepath": "/",
+                "filesize": 966,
+                "fileurl": "https://uamvirtual.uam.edu.ni/grado/webservice/pluginfile.php/1185483/assignfeedback_editpdf/stamps/1519547/sad.png",
+                "timemodified": 1735605666,
+                "mimetype": "image/png",
+                "isexternalfile": false,
+                "icon": "f/image"
+              },
+              {
+                "filename": "smile.png",
+                "filepath": "/",
+                "filesize": 1085,
+                "fileurl": "https://uamvirtual.uam.edu.ni/grado/webservice/pluginfile.php/1185483/assignfeedback_editpdf/stamps/1519547/smile.png",
+                "timemodified": 1735605666,
+                "mimetype": "image/png",
+                "isexternalfile": false,
+                "icon": "f/image"
+              },
+              {
+                "filename": "tick.png",
+                "filepath": "/",
+                "filesize": 1039,
+                "fileurl": "https://uamvirtual.uam.edu.ni/grado/webservice/pluginfile.php/1185483/assignfeedback_editpdf/stamps/1519547/tick.png",
+                "timemodified": 1735605666,
+                "mimetype": "image/png",
+                "isexternalfile": false,
+                "icon": "f/image"
+              }
+            ]
+          },
+          {
+            "area": "tmp_jpg_to_pdf",
+            "files": []
+          },
+          {
+            "area": "tmp_rotated_jpg",
+            "files": []
+          }
+        ]
+      },
+      {
+        "type": "file",
+        "name": "Archivos de retroalimentación",
+        "fileareas": [
+          {
+            "area": "feedback_files",
+            "files": []
+          }
+        ]
+      }
+    ]
+  },
+  "assignmentdata": {
+    "attachments": {
+      "intro": []
+    }
+  },
+  "warnings": []
+}
