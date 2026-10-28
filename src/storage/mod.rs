@@ -1,5 +1,7 @@
+pub mod models;
 pub mod pool;
 
+pub use models::*;
 pub use pool::{build_pool, create_connect_options};
 
 use crate::config::Config;
