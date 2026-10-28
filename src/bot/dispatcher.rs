@@ -1,3 +1,5 @@
+use crate::bot::commands::Command;
+use crate::bot::handlers::start::{handle_ayuda, handle_start};
 use crate::bot::Bot;
 use crate::config::Config;
 use crate::moodle::MoodleClient;
@@ -13,10 +15,11 @@ pub fn create_dispatcher(
     moodle: MoodleClient,
     config: Arc<Config>,
 ) -> Dispatcher<Bot, anyhow::Error, teloxide::dispatching::DefaultKey> {
-    let handler = Update::filter_message().endpoint(|_bot: Bot| async move {
-        // Esqueleto básico de despacho
-        Ok::<(), anyhow::Error>(())
-    });
+    let command_handler = teloxide::filter_command::<Command, _>()
+        .branch(dptree::case![Command::Start].endpoint(handle_start))
+        .branch(dptree::case![Command::Ayuda].endpoint(handle_ayuda));
+
+    let handler = Update::filter_message().branch(command_handler);
 
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![pool, moodle, config])

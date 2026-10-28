@@ -2,8 +2,10 @@ use teloxide::adaptors::throttle::Limits;
 use teloxide::adaptors::Throttle;
 use teloxide::requests::RequesterExt;
 
+pub mod commands;
 pub mod copy;
 pub mod dispatcher;
+pub mod handlers;
 
 /// Tipo de bot de Telegram envuelto en el adaptador Throttle para control estricto de rate limits (RNF-08).
 pub type Bot = Throttle<teloxide::Bot>;
