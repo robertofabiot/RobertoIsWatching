@@ -22,4 +22,6 @@ target/
 
 # Carpetas y metadatos de agentes AI
 .agents/
+agents.md
+
 
