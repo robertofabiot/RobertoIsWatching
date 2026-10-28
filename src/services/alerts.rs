@@ -67,10 +67,10 @@ impl AlertService {
                 );
 
                 // 3. Clasificación de errores de Telegram (A-15):
-                let err_str = err.to_string();
-                if err_str.contains("bot was blocked by the user")
-                    || err_str.contains("user is deactivated")
-                    || err_str.contains("chat not found")
+                let err_lower = err.to_string().to_lowercase();
+                if err_lower.contains("bot was blocked by the user")
+                    || err_lower.contains("user is deactivated")
+                    || err_lower.contains("chat not found")
                 {
                     tracing::warn!(
                         chat_id = chat_id,
@@ -161,5 +161,115 @@ mod tests {
             .await
             .unwrap();
         assert!(!sent_again);
+    }
+
+    #[tokio::test]
+    async fn test_alert_dispatcher_bot_blocked_marks_inactive() {
+        let server = MockServer::start().await;
+
+        // Mock Telegram devolviendo 403 Forbidden: bot was blocked by the user
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                "ok": false,
+                "error_code": 403,
+                "description": "Forbidden: bot was blocked by the user"
+            })))
+            .mount(&server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_alerts_blocked_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", server.uri())).unwrap(),
+        );
+
+        // Crear usuario activo
+        UsersRepository::upsert_login(
+            &pool,
+            4030,
+            "24014030",
+            4030,
+            "Blocked User",
+            "token_blocked",
+        )
+        .await
+        .unwrap();
+
+        let key = "new_assign:4030:10";
+        let res = AlertService::dispatch(&pool, &bot, key, "new_assignment", 4030, "Aviso")
+            .await
+            .unwrap();
+        assert!(!res);
+
+        // Verificar que el usuario fue marcado como inactivo por 'bot_blocked' (A-15)
+        let user = UsersRepository::get(&pool, 4030).await.unwrap().unwrap();
+        assert!(!user.is_active);
+        assert_eq!(user.inactive_reason.as_deref(), Some("bot_blocked"));
+    }
+
+    #[tokio::test]
+    async fn test_alert_dispatcher_transient_error_releases_claim() {
+        let server = MockServer::start().await;
+
+        // Mock Telegram devolviendo error 500 transitorio
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "ok": false,
+                "error_code": 500,
+                "description": "Internal Server Error"
+            })))
+            .mount(&server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_alerts_transient_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", server.uri())).unwrap(),
+        );
+
+        let key = "grade:5000:20:abcd";
+
+        // Dispatch falla por error 500
+        let res = AlertService::dispatch(&pool, &bot, key, "grade", 5000, "Nota")
+            .await
+            .unwrap();
+        assert!(!res);
+
+        // La clave debe haber sido liberada (release) para reintento en el próximo ciclo (A-15)
+        let claimed = AlertsRepository::is_claimed(&pool, key).await.unwrap();
+        assert!(
+            !claimed,
+            "La alerta debe liberarse tras un error transitorio"
+        );
     }
 }
