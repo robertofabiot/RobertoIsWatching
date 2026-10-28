@@ -1,8 +1,10 @@
 pub mod models;
 pub mod pool;
+pub mod users;
 
 pub use models::*;
 pub use pool::{build_pool, create_connect_options};
+pub use users::UsersRepository;
 
 use crate::config::Config;
 use sqlx::SqlitePool;
