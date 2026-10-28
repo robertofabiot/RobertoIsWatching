@@ -1,14 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
-mod bot;
-mod config;
-mod moodle;
-mod scheduler;
-mod services;
-mod storage;
-mod telemetry;
-
-use config::Config;
+use robertos_watching_bot::config::Config;
+use robertos_watching_bot::{bot, config, moodle, scheduler, services, storage, telemetry};
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {

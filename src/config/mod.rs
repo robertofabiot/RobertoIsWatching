@@ -58,10 +58,10 @@ impl std::error::Error for ConfigError {}
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         dotenvy::dotenv().ok();
-        Self::from_iter(std::env::vars())
+        Self::from_entries(std::env::vars())
     }
 
-    pub fn from_iter<I, K, V>(iter: I) -> Result<Self, ConfigError>
+    pub fn from_entries<I, K, V>(iter: I) -> Result<Self, ConfigError>
     where
         I: IntoIterator<Item = (K, V)>,
         K: AsRef<str>,
@@ -140,6 +140,16 @@ impl Config {
             bot_tz,
             rust_log,
         })
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_iter<I, K, V>(iter: I) -> Result<Self, ConfigError>
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: AsRef<str>,
+        V: AsRef<str>,
+    {
+        Self::from_entries(iter)
     }
 }
 
