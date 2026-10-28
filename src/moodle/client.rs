@@ -1,3 +1,4 @@
+use crate::moodle::gate::MoodleGate;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,12 +10,13 @@ pub const REQUEST_TIMEOUT_SECS: u64 = 20;
 
 /// Constructor configurable del cliente HTTP de Moodle (A-10).
 /// Utiliza Rustls, timeouts estrictos y User-Agent propio, sin cookie store compartido.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MoodleClientBuilder {
     base_url: String,
     user_agent: String,
     connect_timeout: Duration,
     timeout: Duration,
+    gate: Option<MoodleGate>,
 }
 
 impl Default for MoodleClientBuilder {
@@ -24,6 +26,7 @@ impl Default for MoodleClientBuilder {
             user_agent: DEFAULT_USER_AGENT.to_string(),
             connect_timeout: Duration::from_secs(CONNECT_TIMEOUT_SECS),
             timeout: Duration::from_secs(REQUEST_TIMEOUT_SECS),
+            gate: None,
         }
     }
 }
@@ -58,6 +61,11 @@ impl MoodleClientBuilder {
         self
     }
 
+    pub fn gate(mut self, gate: MoodleGate) -> Self {
+        self.gate = Some(gate);
+        self
+    }
+
     /// Construye el `reqwest::Client` configurado.
     pub fn build_http(&self) -> reqwest::Client {
         reqwest::Client::builder()
@@ -80,23 +88,22 @@ impl MoodleClientBuilder {
 pub struct MoodleClient {
     http: reqwest::Client,
     base_url: Arc<String>,
+    gate: Arc<MoodleGate>,
 }
 
 impl MoodleClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         let builder = MoodleClientBuilder::new().base_url(base_url);
-        let http = builder.build_http();
-        Self {
-            http,
-            base_url: Arc::new(builder.base_url),
-        }
+        Self::from_builder(builder)
     }
 
     pub fn from_builder(builder: MoodleClientBuilder) -> Self {
         let http = builder.build_http();
+        let gate = builder.gate.unwrap_or_default();
         Self {
             http,
             base_url: Arc::new(builder.base_url),
+            gate: Arc::new(gate),
         }
     }
 
@@ -106,6 +113,10 @@ impl MoodleClient {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    pub fn gate(&self) -> &MoodleGate {
+        &self.gate
     }
 
     /// Retorna la URL del endpoint de autenticación `login/token.php`.
