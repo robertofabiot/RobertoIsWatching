@@ -91,6 +91,12 @@ impl AlertService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bot::create_bot_with_url;
+    use crate::config::Config;
+    use crate::storage::init;
+    use std::sync::Arc;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn test_fnv1a_hash_determinism() {
@@ -100,5 +106,60 @@ mod tests {
         assert_eq!(h1, h2);
         assert_ne!(h1, h3);
         assert_eq!(h1.len(), 16);
+    }
+
+    #[tokio::test]
+    async fn test_alert_dispatcher_claim_send_and_dedup() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {
+                    "message_id": 1,
+                    "date": 1700000000,
+                    "chat": { "id": 1234, "type": "private" },
+                    "text": "test"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_alerts_disp_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", server.uri())).unwrap(),
+        );
+
+        let key = "new_assign:1234:55";
+        let msg = "<b>Nueva tarea</b>";
+
+        // Primer envío: exitoso y reclamado
+        let sent = AlertService::dispatch(&pool, &bot, key, "new_assignment", 1234, msg)
+            .await
+            .unwrap();
+        assert!(sent);
+        assert!(AlertsRepository::is_claimed(&pool, key).await.unwrap());
+
+        // Segundo intento con la misma clave: debe ser suprimido (RF-09, A-14)
+        let sent_again = AlertService::dispatch(&pool, &bot, key, "new_assignment", 1234, msg)
+            .await
+            .unwrap();
+        assert!(!sent_again);
     }
 }
