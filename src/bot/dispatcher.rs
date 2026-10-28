@@ -6,6 +6,7 @@ use crate::bot::handlers::courses::handle_cursos;
 use crate::bot::handlers::grades::handle_notas;
 use crate::bot::handlers::start::{handle_ayuda, handle_start};
 use crate::bot::handlers::summary::handle_resumen;
+use crate::bot::handlers::sync::handle_sync;
 use crate::bot::rate_limit::LoginRateLimiter;
 use crate::bot::Bot;
 use crate::config::Config;
@@ -32,6 +33,7 @@ pub fn create_dispatcher(
         .branch(dptree::case![Command::Pendientes].endpoint(handle_pendientes))
         .branch(dptree::case![Command::Notas].endpoint(handle_notas))
         .branch(dptree::case![Command::Resumen].endpoint(handle_resumen))
+        .branch(dptree::case![Command::Sync].endpoint(handle_sync))
         .branch(dptree::case![Command::Logout].endpoint(handle_logout));
 
     let admin_handler = teloxide::filter_command::<AdminCommand, _>().endpoint(handle_admin);

@@ -5,3 +5,4 @@ pub mod courses;
 pub mod grades;
 pub mod start;
 pub mod summary;
+pub mod sync;
