@@ -1,8 +1,10 @@
+pub mod assignments;
 pub mod courses;
 pub mod models;
 pub mod pool;
 pub mod users;
 
+pub use assignments::{AssignmentChanges, AssignmentsRepository, UpsertAssignmentResult};
 pub use courses::CoursesRepository;
 pub use models::*;
 pub use pool::{build_pool, create_connect_options};
