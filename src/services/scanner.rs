@@ -274,10 +274,11 @@ impl ScannerWorker {
                 }
             }
 
-            // Upsert de módulos
+            // Upsert de módulos (materiales y recursos RF-06)
+            let mut newly_inserted_modules = Vec::new();
             if let Some(contents_outcome) = contents_outcome_opt {
                 for m in contents_outcome.data {
-                    if let Some(_inserted) = ModulesRepository::upsert_returning_new(
+                    if let Some(inserted_mod) = ModulesRepository::upsert_returning_new(
                         &self.pool,
                         m.id,
                         course.id,
@@ -289,6 +290,40 @@ impl ScannerWorker {
                     .await?
                     {
                         summary.new_materials += 1;
+                        if !is_baseline {
+                            newly_inserted_modules.push(inserted_mod);
+                        }
+                    }
+                }
+            }
+
+            // Si el curso ya contaba con línea base, notificar nuevos materiales (RF-06)
+            if !is_baseline && !newly_inserted_modules.is_empty() {
+                let enrolled_students =
+                    UsersRepository::active_users_for_course(&self.pool, course.id).await?;
+
+                for m in &newly_inserted_modules {
+                    for student in &enrolled_students {
+                        let alert_key = format!("new_material:{}:{}", student.chat_id, m.id);
+                        let msg = copy::alert_new_material(
+                            &m.name,
+                            &course.fullname,
+                            m.section_name.as_deref(),
+                        );
+
+                        if AlertService::dispatch(
+                            &self.pool,
+                            &self.bot,
+                            &alert_key,
+                            "new_material",
+                            student.chat_id,
+                            &msg,
+                        )
+                        .await
+                        .unwrap_or(false)
+                        {
+                            summary.alerts_dispatched += 1;
+                        }
                     }
                 }
             }
@@ -735,6 +770,122 @@ mod tests {
         // Ciclo 2: Segundo escaneo no duplica alerta (RF-09 idempotencia)
         let summary2 = worker.run_scan_cycle().await.unwrap();
         assert_eq!(summary2.new_assignments, 0);
+        assert_eq!(summary2.alerts_dispatched, 0);
+    }
+
+    #[tokio::test]
+    async fn test_scanner_new_material_alert() {
+        use crate::bot::create_bot_with_url;
+        use crate::storage::AlertsRepository;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let moodle_server = MockServer::start().await;
+        let telegram_server = MockServer::start().await;
+
+        // Mock Telegram SendMessage
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {
+                    "message_id": 100,
+                    "date": 1700000000,
+                    "chat": { "id": 888, "type": "private" },
+                    "text": "alerta material"
+                }
+            })))
+            .mount(&telegram_server)
+            .await;
+
+        // Mock Moodle mod_assign_get_assignments sin tareas
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains(
+                "wsfunction=mod_assign_get_assignments",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "courses": [{
+                    "id": 700,
+                    "assignments": []
+                }]
+            })))
+            .mount(&moodle_server)
+            .await;
+
+        // Mock Moodle core_course_get_contents con nuevo material
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains(
+                "wsfunction=core_course_get_contents",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": 7100,
+                    "name": "Semana 4 - Redes",
+                    "modules": [
+                        {
+                            "id": 9001,
+                            "name": "Guía Práctica 4.pdf",
+                            "modname": "resource",
+                            "url": "https://moodle/guia4.pdf"
+                        }
+                    ]
+                }
+            ])))
+            .mount(&moodle_server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_scanner_material_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = crate::storage::init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", telegram_server.uri())).unwrap(),
+        );
+        let moodle = MoodleClient::new(moodle_server.uri());
+
+        // Insertar curso 700 y establecer línea base previa (last_scanned != NULL)
+        CoursesRepository::upsert_course(&pool, 700, "Redes de Computadoras", Some("REDES"))
+            .await
+            .unwrap();
+        CoursesRepository::touch_scanned(&pool, 700).await.unwrap();
+
+        // Insertar usuario matriculado 888
+        UsersRepository::upsert_login(&pool, 888, "24010888", 88, "Alumno Redes", "token_888")
+            .await
+            .unwrap();
+        CoursesRepository::link_user(&pool, 888, 700).await.unwrap();
+
+        let worker = ScannerWorker::new(pool.clone(), moodle, bot, config);
+
+        // Ciclo 1: detecta nuevo material y despacha alerta RF-06
+        let summary1 = worker.run_scan_cycle().await.unwrap();
+        assert_eq!(summary1.courses_scanned, 1);
+        assert_eq!(summary1.new_materials, 1);
+        assert_eq!(summary1.alerts_dispatched, 1);
+
+        // Comprobar que la clave quedó registrada en sent_alerts
+        let claimed = AlertsRepository::is_claimed(&pool, "new_material:888:9001")
+            .await
+            .unwrap();
+        assert!(claimed);
+
+        // Ciclo 2: Segundo escaneo con los mismos datos es 100% idempotente
+        let summary2 = worker.run_scan_cycle().await.unwrap();
+        assert_eq!(summary2.new_materials, 0);
         assert_eq!(summary2.alerts_dispatched, 0);
     }
 }
