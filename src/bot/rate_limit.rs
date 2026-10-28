@@ -35,7 +35,7 @@ impl LoginRateLimiter {
         let now = Instant::now();
         let window = Duration::from_secs(600);
 
-        let history = map.entry(chat_id).or_insert_with(Vec::new);
+        let history = map.entry(chat_id).or_default();
         history.retain(|&t| now.duration_since(t) < window);
         history.push(now);
     }
