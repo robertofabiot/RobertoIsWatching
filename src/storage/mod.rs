@@ -4,6 +4,7 @@ pub mod courses;
 pub mod models;
 pub mod modules;
 pub mod pool;
+pub mod settings;
 pub mod submissions;
 pub mod users;
 
@@ -13,6 +14,7 @@ pub use courses::CoursesRepository;
 pub use models::*;
 pub use modules::ModulesRepository;
 pub use pool::{build_pool, create_connect_options};
+pub use settings::SettingsRepository;
 pub use submissions::{
     SubmissionChanges, SubmissionData, SubmissionsRepository, UpsertSubmissionResult,
 };
