@@ -8,17 +8,93 @@ use crate::moodle::MoodleClient;
 use crate::services::alerts::AlertService;
 use crate::services::session;
 use crate::storage::assignments::UpsertAssignmentResult;
-use crate::storage::submissions::SubmissionData;
+use crate::storage::models::UserSubmission;
+use crate::storage::submissions::{SubmissionData, UpsertSubmissionResult};
 use crate::storage::{
     AssignmentsRepository, CoursesRepository, ModulesRepository, SubmissionsRepository,
     UsersRepository,
 };
 use sqlx::SqlitePool;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 
 pub const DEFAULT_INITIAL_DELAY_SECS: u64 = 5;
+
+/// Niveles de sondeo escalonado de entregas por alumno para evitar sobrecarga (A-05, RF-05).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmissionTier {
+    /// Plazo < 72h, vencida hace < 14d sin nota, entregada sin calificar o nueva.
+    Hot,
+    /// Plazo < 14d (y >= 72h).
+    Warm,
+    /// Plazo > 14d, o calificada y cerrada.
+    Cold,
+}
+
+impl SubmissionTier {
+    /// Clasifica una tarea para un estudiante en su respectivo nivel de sondeo.
+    pub fn classify(
+        now_epoch: i64,
+        effective_duedate: Option<i64>,
+        submission: Option<&UserSubmission>,
+    ) -> Self {
+        let is_graded = submission
+            .map(|s| s.graded || s.grade.is_some())
+            .unwrap_or(false);
+        let is_submitted = submission
+            .and_then(|s| s.status.as_deref())
+            .map(|st| st == "submitted")
+            .unwrap_or(false);
+
+        // Si ya está calificada con nota final, se envía a nivel frío
+        if is_graded {
+            return Self::Cold;
+        }
+
+        // Si ya fue entregada pero aún no tiene calificación, se sondea en caliente para alertar rápido la nota
+        if is_submitted {
+            return Self::Hot;
+        }
+
+        if let Some(due) = effective_duedate {
+            if due > 0 {
+                if due > now_epoch {
+                    let remaining = due - now_epoch;
+                    if remaining <= 72 * 3600 {
+                        Self::Hot
+                    } else if remaining <= 14 * 86400 {
+                        Self::Warm
+                    } else {
+                        Self::Cold
+                    }
+                } else {
+                    // Vencida: si cerró hace menos de 14 días y sigue sin nota, monitorear en caliente
+                    let elapsed = now_epoch - due;
+                    if elapsed <= 14 * 86400 {
+                        Self::Hot
+                    } else {
+                        Self::Cold
+                    }
+                }
+            } else {
+                Self::Hot
+            }
+        } else {
+            Self::Hot
+        }
+    }
+
+    /// Determina si este nivel debe ser consultado en el ciclo actual.
+    pub fn should_poll(&self, cycle_count: u64) -> bool {
+        match self {
+            Self::Hot => true,
+            Self::Warm => cycle_count.is_multiple_of(4),
+            Self::Cold => cycle_count.is_multiple_of(48),
+        }
+    }
+}
 
 /// Resumen de estadísticas de ejecución de un ciclo de escaneo.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -40,6 +116,7 @@ pub struct ScannerWorker {
     pub(crate) config: Arc<Config>,
     pub(crate) interval: Duration,
     pub(crate) initial_delay: Duration,
+    pub(crate) cycle_count: AtomicU64,
 }
 
 impl ScannerWorker {
@@ -52,6 +129,7 @@ impl ScannerWorker {
             config,
             interval,
             initial_delay: Duration::from_secs(DEFAULT_INITIAL_DELAY_SECS),
+            cycle_count: AtomicU64::new(0),
         }
     }
 
@@ -62,9 +140,21 @@ impl ScannerWorker {
         self
     }
 
-    /// Ejecuta un único ciclo de escaneo compartido con failover de donantes (RF-02, RF-08).
+    /// Ejecuta un único ciclo de escaneo compartido incrementando el contador interno.
     pub async fn run_scan_cycle(&self) -> Result<ScanCycleSummary, anyhow::Error> {
-        tracing::info!("Iniciando ciclo de escaneo compartido de Moodle...");
+        let cycle = self.cycle_count.fetch_add(1, Ordering::SeqCst);
+        self.run_scan_cycle_with_count(cycle).await
+    }
+
+    /// Ejecuta un único ciclo de escaneo con un índice de ciclo específico (para pruebas de sondeo por niveles).
+    pub async fn run_scan_cycle_with_count(
+        &self,
+        cycle_count: u64,
+    ) -> Result<ScanCycleSummary, anyhow::Error> {
+        tracing::info!(
+            cycle = cycle_count,
+            "Iniciando ciclo de escaneo compartido de Moodle..."
+        );
         let mut summary = ScanCycleSummary::default();
 
         let courses = CoursesRepository::unique_active_courses(&self.pool).await?;
@@ -328,6 +418,134 @@ impl ScannerWorker {
                 }
             }
 
+            // 4. Sondeo escalonado por niveles de entregas y calificaciones (A-05, RF-05)
+            // Hot: cada ciclo | Warm: cada 4 ciclos | Cold: una vez al día (cada 48 ciclos)
+            let now_epoch = chrono::Utc::now().timestamp();
+            let all_course_assigns =
+                AssignmentsRepository::get_by_course(&self.pool, course.id).await?;
+            let enrolled_students =
+                UsersRepository::active_users_for_course(&self.pool, course.id).await?;
+
+            for student in &enrolled_students {
+                for assign in &all_course_assigns {
+                    let existing_sub =
+                        SubmissionsRepository::get(&self.pool, student.chat_id, assign.id).await?;
+                    let effective_due = existing_sub
+                        .as_ref()
+                        .and_then(|s| s.due_override)
+                        .or(assign.duedate);
+
+                    let tier =
+                        SubmissionTier::classify(now_epoch, effective_due, existing_sub.as_ref());
+                    if !tier.should_poll(cycle_count) {
+                        continue;
+                    }
+
+                    summary.submissions_checked += 1;
+
+                    match self
+                        .moodle
+                        .fetch_user_submission(
+                            &student.wstoken,
+                            assign.id,
+                            student.uam_user_id,
+                            Priority::Background,
+                        )
+                        .await
+                    {
+                        Ok(sub_status) => {
+                            let sub_res = SubmissionsRepository::upsert(
+                                &self.pool,
+                                SubmissionData {
+                                    chat_id: student.chat_id,
+                                    assignment_id: assign.id,
+                                    status: sub_status.status.as_deref(),
+                                    graded: sub_status.graded,
+                                    grade: sub_status.grade.as_deref(),
+                                    feedback: sub_status.feedback_text.as_deref(),
+                                    due_override: sub_status.due_override,
+                                },
+                            )
+                            .await?;
+
+                            // Detección de nueva calificación o cambios en nota/feedback (RF-05)
+                            // Solo se alertan si el curso no está en siembra silenciosa (A-03)
+                            if !is_baseline {
+                                let grade_candidate = match &sub_res {
+                                    UpsertSubmissionResult::Inserted(s)
+                                        if s.graded || s.grade.is_some() =>
+                                    {
+                                        Some((
+                                            s.grade
+                                                .clone()
+                                                .unwrap_or_else(|| "Calificada".to_string()),
+                                            s.feedback.clone(),
+                                        ))
+                                    }
+                                    UpsertSubmissionResult::Updated {
+                                        changes,
+                                        submission,
+                                    } if (changes.grade_changed || changes.feedback_changed)
+                                        && (submission.graded || submission.grade.is_some()) =>
+                                    {
+                                        Some((
+                                            submission
+                                                .grade
+                                                .clone()
+                                                .unwrap_or_else(|| "Calificada".to_string()),
+                                            submission.feedback.clone(),
+                                        ))
+                                    }
+                                    _ => None,
+                                };
+
+                                if let Some((grade_str, feedback_opt)) = grade_candidate {
+                                    let hash_raw = format!(
+                                        "{}|{}",
+                                        grade_str,
+                                        feedback_opt.as_deref().unwrap_or("")
+                                    );
+                                    let hash = crate::services::alerts::fnv1a_hash(&hash_raw);
+                                    let alert_key =
+                                        format!("grade:{}:{}:{}", student.chat_id, assign.id, hash);
+                                    let msg = copy::alert_new_grade(
+                                        &assign.name,
+                                        &grade_str,
+                                        feedback_opt.as_deref(),
+                                    );
+
+                                    if AlertService::dispatch(
+                                        &self.pool,
+                                        &self.bot,
+                                        &alert_key,
+                                        "grade",
+                                        student.chat_id,
+                                        &msg,
+                                    )
+                                    .await
+                                    .unwrap_or(false)
+                                    {
+                                        summary.alerts_dispatched += 1;
+                                    }
+                                }
+                            }
+                        }
+                        Err(err) if err.is_token_error() => {
+                            let _ =
+                                session::expire_user(&self.pool, &self.bot, student.chat_id).await;
+                        }
+                        Err(err) => {
+                            tracing::debug!(
+                                chat_id = student.chat_id,
+                                assign_id = assign.id,
+                                error = %err,
+                                "Error al consultar entrega en sondeo escalonado"
+                            );
+                        }
+                    }
+                }
+            }
+
             // Actualizar marca de último escaneo del curso
             CoursesRepository::touch_scanned(&self.pool, course.id).await?;
 
@@ -584,6 +802,20 @@ mod tests {
                     ]
                 }
             ])))
+            .mount(&server)
+            .await;
+
+        // Responder entregas (evita fallos 404 y trip de circuit breaker)
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains(
+                "wsfunction=mod_assign_get_submission_status",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "lastattempt": {
+                    "submission": { "id": 9999, "status": "new" }
+                }
+            })))
             .mount(&server)
             .await;
 
@@ -887,5 +1119,174 @@ mod tests {
         let summary2 = worker.run_scan_cycle().await.unwrap();
         assert_eq!(summary2.new_materials, 0);
         assert_eq!(summary2.alerts_dispatched, 0);
+    }
+
+    #[tokio::test]
+    async fn test_scanner_tiered_submission_polling_and_grade_alert() {
+        use crate::bot::create_bot_with_url;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let moodle_server = MockServer::start().await;
+        let telegram_server = MockServer::start().await;
+
+        // Mock Telegram SendMessage
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {
+                    "message_id": 101,
+                    "date": 1700000000,
+                    "chat": { "id": 999, "type": "private" },
+                    "text": "alerta nota"
+                }
+            })))
+            .mount(&telegram_server)
+            .await;
+
+        // Mock Moodle mod_assign_get_assignments sin tareas nuevas
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains(
+                "wsfunction=mod_assign_get_assignments",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "courses": [{
+                    "id": 800,
+                    "assignments": []
+                }]
+            })))
+            .mount(&moodle_server)
+            .await;
+
+        // Mock core_course_get_contents vacío
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains(
+                "wsfunction=core_course_get_contents",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&moodle_server)
+            .await;
+
+        // Mock Moodle fetch_user_submission para tarea 8001 (devuelve nota nueva 95)
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains("assignid=8001"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "lastattempt": {
+                    "submission": { "id": 9901, "status": "submitted" },
+                    "graded": true,
+                    "gradingstatus": "graded"
+                },
+                "feedback": {
+                    "grade": { "grade": "95.00" },
+                    "plugins": [{
+                        "type": "comments",
+                        "editorfields": [{ "text": "<p>Excelente trabajo</p>" }]
+                    }]
+                }
+            })))
+            .mount(&moodle_server)
+            .await;
+
+        // Mock Moodle fetch_user_submission para tarea 8002 (Warm)
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains("assignid=8002"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "lastattempt": {
+                    "submission": { "id": 9902, "status": "new" },
+                    "graded": false
+                }
+            })))
+            .mount(&moodle_server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_scanner_tiered_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = crate::storage::init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", telegram_server.uri())).unwrap(),
+        );
+        let moodle = MoodleClient::new(moodle_server.uri());
+
+        // Curso 800 con línea base
+        CoursesRepository::upsert_course(&pool, 800, "Física III", Some("FIS3"))
+            .await
+            .unwrap();
+        CoursesRepository::touch_scanned(&pool, 800).await.unwrap();
+
+        // Alumno 999
+        UsersRepository::upsert_login(&pool, 999, "24010999", 99, "Alumno Física", "token_999")
+            .await
+            .unwrap();
+        CoursesRepository::link_user(&pool, 999, 800).await.unwrap();
+
+        let now = chrono::Utc::now().timestamp();
+
+        // Tarea 8001: vence en 24h -> Nivel Hot
+        AssignmentsRepository::upsert(
+            &pool,
+            8001,
+            None,
+            800,
+            "Laboratorio 1",
+            Some(now + 86400),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Tarea 8002: vence en 5 días -> Nivel Warm (5 * 86400 = 432000s > 72h y < 14d)
+        AssignmentsRepository::upsert(
+            &pool,
+            8002,
+            None,
+            800,
+            "Laboratorio 2",
+            Some(now + 432000),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let worker = ScannerWorker::new(pool.clone(), moodle, bot, config);
+
+        // Ciclo con count = 1: 1 % 1 == 0 (Hot corre), pero 1 % 4 != 0 (Warm no corre)
+        let summary_cycle1 = worker.run_scan_cycle_with_count(1).await.unwrap();
+        assert_eq!(summary_cycle1.submissions_checked, 1); // Solo la tarea Hot (8001)
+        assert_eq!(summary_cycle1.alerts_dispatched, 1); // Alerta de nueva nota emitida
+
+        // Comprobar que la clave de alerta tiene el prefijo grade:999:8001:
+        let prefix = "grade:999:8001:";
+        let claimed_alerts = sqlx::query_scalar::<_, String>(
+            "SELECT alert_key FROM sent_alerts WHERE alert_key LIKE ? || '%'",
+        )
+        .bind(prefix)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(claimed_alerts.len(), 1);
+
+        // Ciclo con count = 4: 4 % 4 == 0 -> Warm ahora sí corre
+        let summary_cycle4 = worker.run_scan_cycle_with_count(4).await.unwrap();
+        // En ciclo 4: tarea 8001 ya está calificada (Cold: 4 % 48 != 0), pero 8002 es Warm (4 % 4 == 0)
+        assert_eq!(summary_cycle4.submissions_checked, 1); // Solo la tarea Warm (8002)
+        assert_eq!(summary_cycle4.alerts_dispatched, 0); // No hay nueva nota para 8002
     }
 }
