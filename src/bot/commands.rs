@@ -15,6 +15,8 @@ pub enum Command {
     Login(String),
     #[command(description = "Asignaturas matriculadas bajo vigilancia 24/7")]
     Cursos,
+    #[command(description = "Lista de entregas y tareas pendientes")]
+    Pendientes,
     #[command(description = "Cierre de sesión y purga de datos")]
     Logout,
 }
@@ -41,6 +43,10 @@ mod tests {
             Command::Login("24014121 MiClave123".to_string())
         );
         assert_eq!(Command::parse("/cursos", "").unwrap(), Command::Cursos);
+        assert_eq!(
+            Command::parse("/pendientes", "").unwrap(),
+            Command::Pendientes
+        );
         assert_eq!(Command::parse("/logout", "").unwrap(), Command::Logout);
     }
 

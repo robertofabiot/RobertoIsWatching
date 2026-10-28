@@ -9,7 +9,9 @@ pub mod submissions;
 pub mod users;
 
 pub use alerts::AlertsRepository;
-pub use assignments::{AssignmentChanges, AssignmentsRepository, UpsertAssignmentResult};
+pub use assignments::{
+    AssignmentChanges, AssignmentsRepository, PendingAssignmentItem, UpsertAssignmentResult,
+};
 pub use courses::CoursesRepository;
 pub use models::*;
 pub use modules::ModulesRepository;
