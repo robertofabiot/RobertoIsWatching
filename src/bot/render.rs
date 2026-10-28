@@ -66,6 +66,81 @@ pub async fn send_chunked_html(
     Ok(())
 }
 
+/// Genera el desglose del resumen diario ("lo que hay hoy") reutilizable para /resumen y el ticker cron (A-13, PR #8).
+pub async fn render_daily_summary(
+    pool: &sqlx::SqlitePool,
+    chat_id: i64,
+    tz: chrono_tz::Tz,
+) -> Result<(String, Vec<String>), sqlx::Error> {
+    let pending =
+        crate::storage::AssignmentsRepository::pending_detailed_for_user(pool, chat_id, None)
+            .await?;
+
+    if pending.is_empty() {
+        let msg = format!(
+            "📊 <b>ROBERTO'S WATCHING — RESUMEN DEL DÍA</b>\n\n{}\n\n<i>Escribe /sync para forzar una comprobación de cambios.</i>",
+            crate::bot::copy::PENDIENTES_ALL_CLEAR
+        );
+        return Ok((msg, Vec::new()));
+    }
+
+    let now_epoch = chrono::Utc::now().timestamp();
+    let header = format!(
+        "📊 <b>ROBERTO'S WATCHING — RESUMEN DEL DÍA</b>\n\n\
+         👁️ <b>Roberto's watching your radar.</b> Tienes <b>{} entregas pendientes</b>:",
+        pending.len()
+    );
+
+    let mut items = Vec::new();
+    for item in pending {
+        let due_epoch = item.effective_duedate().unwrap_or(0);
+        let is_urgent = due_epoch > 0 && due_epoch <= now_epoch + 86400; // < 24h
+        let icon = if is_urgent { "🚨" } else { "📝" };
+        let tag = if is_urgent {
+            " <b>(¡URGENTE!)</b>"
+        } else {
+            ""
+        };
+        let ext_tag = if item.is_extended() {
+            " <i>[extensión]</i>"
+        } else {
+            ""
+        };
+
+        let due_str = if due_epoch > 0 {
+            crate::bot::copy::format_epoch_local(due_epoch, tz)
+        } else {
+            "Sin fecha límite".to_string()
+        };
+
+        items.push(format!(
+            "{} <b>{}</b>{}\n   📚 <i>{}</i>\n   ⏰ Vence: <b>{}</b>{}",
+            icon,
+            crate::bot::copy::escape_html(&item.name),
+            tag,
+            crate::bot::copy::escape_html(&item.course_name),
+            due_str,
+            ext_tag
+        ));
+    }
+
+    let graded =
+        crate::storage::SubmissionsRepository::graded_for_user_detailed(pool, chat_id).await?;
+    if !graded.is_empty() {
+        for g in graded.into_iter().take(2) {
+            let grade_str = g.grade.as_deref().unwrap_or("Calificado");
+            items.push(format!(
+                "🎯 <i>Nota reciente:</i> <b>{}</b> en <i>{}</i> (<b>{}</b>)",
+                crate::bot::copy::escape_html(&g.assignment_name),
+                crate::bot::copy::escape_html(&g.course_name),
+                crate::bot::copy::escape_html(grade_str)
+            ));
+        }
+    }
+
+    Ok((header, items))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

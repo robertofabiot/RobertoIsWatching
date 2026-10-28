@@ -19,6 +19,8 @@ pub enum Command {
     Pendientes,
     #[command(description = "Desglose de calificaciones y feedback reciente")]
     Notas,
+    #[command(description = "Resumen académico del día")]
+    Resumen,
     #[command(description = "Cierre de sesión y purga de datos")]
     Logout,
 }
@@ -50,6 +52,7 @@ mod tests {
             Command::Pendientes
         );
         assert_eq!(Command::parse("/notas", "").unwrap(), Command::Notas);
+        assert_eq!(Command::parse("/resumen", "").unwrap(), Command::Resumen);
         assert_eq!(Command::parse("/logout", "").unwrap(), Command::Logout);
     }
 
