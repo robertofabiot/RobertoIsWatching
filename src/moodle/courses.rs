@@ -1,5 +1,4 @@
 use crate::moodle::client::MoodleClient;
-use crate::moodle::envelope::decode_envelope;
 use crate::moodle::error::{MoodleError, Result};
 use crate::moodle::gate::Priority;
 use crate::storage::DonorToken;
@@ -115,7 +114,6 @@ impl MoodleClient {
         userid: i64,
         priority: Priority,
     ) -> Result<Vec<MoodleCourse>> {
-        let rest_url = self.rest_url();
         let userid_str = userid.to_string();
         let params = [
             ("wstoken", wstoken),
@@ -124,22 +122,7 @@ impl MoodleClient {
             ("userid", &userid_str),
         ];
 
-        let _permit = self.gate().acquire(priority).await?;
-
-        let response = self
-            .http()
-            .post(&rest_url)
-            .form(&params)
-            .send()
-            .await
-            .map_err(MoodleError::from)?;
-
-        if response.status().as_u16() == 503 {
-            return Err(MoodleError::Maintenance);
-        }
-
-        let body_text = response.text().await.map_err(MoodleError::from)?;
-        let courses: Vec<MoodleCourse> = decode_envelope(&body_text)?;
+        let courses: Vec<MoodleCourse> = self.post_webservice(&params, priority).await?;
 
         let now = Utc::now().timestamp();
         let active_courses: Vec<MoodleCourse> =
@@ -155,7 +138,6 @@ impl MoodleClient {
         course_id: i64,
         priority: Priority,
     ) -> Result<Vec<MoodleAssignment>> {
-        let rest_url = self.rest_url();
         let course_id_str = course_id.to_string();
         let params = [
             ("wstoken", wstoken),
@@ -164,22 +146,7 @@ impl MoodleClient {
             ("courseids[0]", &course_id_str),
         ];
 
-        let _permit = self.gate().acquire(priority).await?;
-
-        let response = self
-            .http()
-            .post(&rest_url)
-            .form(&params)
-            .send()
-            .await
-            .map_err(MoodleError::from)?;
-
-        if response.status().as_u16() == 503 {
-            return Err(MoodleError::Maintenance);
-        }
-
-        let body_text = response.text().await.map_err(MoodleError::from)?;
-        let container: AssignmentsContainer = decode_envelope(&body_text)?;
+        let container: AssignmentsContainer = self.post_webservice(&params, priority).await?;
 
         let assignments = container
             .courses
@@ -247,7 +214,6 @@ impl MoodleClient {
         course_id: i64,
         priority: Priority,
     ) -> Result<Vec<ModuleInfo>> {
-        let rest_url = self.rest_url();
         let course_id_str = course_id.to_string();
         let params = [
             ("wstoken", wstoken),
@@ -256,22 +222,7 @@ impl MoodleClient {
             ("courseid", &course_id_str),
         ];
 
-        let _permit = self.gate().acquire(priority).await?;
-
-        let response = self
-            .http()
-            .post(&rest_url)
-            .form(&params)
-            .send()
-            .await
-            .map_err(MoodleError::from)?;
-
-        if response.status().as_u16() == 503 {
-            return Err(MoodleError::Maintenance);
-        }
-
-        let body_text = response.text().await.map_err(MoodleError::from)?;
-        let sections: Vec<CourseSection> = decode_envelope(&body_text)?;
+        let sections: Vec<CourseSection> = self.post_webservice(&params, priority).await?;
 
         let mut modules = Vec::new();
         for section in sections {

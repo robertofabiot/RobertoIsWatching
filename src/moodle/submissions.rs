@@ -1,6 +1,5 @@
 use crate::moodle::client::MoodleClient;
-use crate::moodle::envelope::decode_envelope;
-use crate::moodle::error::{MoodleError, Result};
+use crate::moodle::error::Result;
 use crate::moodle::gate::Priority;
 use serde::Deserialize;
 
@@ -115,7 +114,6 @@ impl MoodleClient {
         user_id: i64,
         priority: Priority,
     ) -> Result<SubmissionStatus> {
-        let rest_url = self.rest_url();
         let assign_id_str = assign_id.to_string();
         let user_id_str = user_id.to_string();
         let params = [
@@ -126,22 +124,7 @@ impl MoodleClient {
             ("userid", &user_id_str),
         ];
 
-        let _permit = self.gate().acquire(priority).await?;
-
-        let response = self
-            .http()
-            .post(&rest_url)
-            .form(&params)
-            .send()
-            .await
-            .map_err(MoodleError::from)?;
-
-        if response.status().as_u16() == 503 {
-            return Err(MoodleError::Maintenance);
-        }
-
-        let body_text = response.text().await.map_err(MoodleError::from)?;
-        let raw: SubmissionStatusResponse = decode_envelope(&body_text)?;
+        let raw: SubmissionStatusResponse = self.post_webservice(&params, priority).await?;
 
         let mut status = None;
         let mut graded = false;
@@ -202,6 +185,7 @@ impl MoodleClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::moodle::envelope::decode_envelope;
 
     #[test]
     fn test_strip_html_to_plain_text() {

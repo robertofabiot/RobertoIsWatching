@@ -45,6 +45,10 @@ impl MoodleClient {
     /// 2. Llama a `.zeroize()` explícitamente sobre la contraseña en cuanto se recibe la respuesta.
     /// 3. Llama a `core_webservice_get_site_info` con el token obtenido para rescatar `userid` y `fullname`.
     pub async fn login(&self, cif: &str, mut pass: Zeroizing<String>) -> Result<LoginInfo> {
+        if self.breaker().is_open() {
+            return Err(MoodleError::Maintenance);
+        }
+
         tracing::info!(cif = %cif, "Iniciando autenticación de usuario en Moodle");
 
         let token_url = self.token_url();
@@ -62,15 +66,28 @@ impl MoodleClient {
         // Sobrescribir inmediatamente la contraseña en memoria (RF-01, A-09)
         pass.zeroize();
 
-        let response = res.map_err(MoodleError::from)?;
+        let response = match res {
+            Ok(resp) => resp,
+            Err(err) => {
+                let moodle_err = MoodleError::from(err);
+                if moodle_err.is_transient() {
+                    self.breaker().record_failure();
+                }
+                return Err(moodle_err);
+            }
+        };
+
         let status = response.status();
         let body_text = response.text().await.map_err(MoodleError::from)?;
 
-        if status.as_u16() == 503 {
+        if status.as_u16() == 503 || status.is_server_error() {
+            self.breaker().record_failure();
             return Err(MoodleError::Maintenance);
         }
 
         let token_res: TokenResponse = decode_envelope(&body_text)?;
+        self.breaker().record_success();
+
         let wstoken = token_res.token.ok_or_else(|| {
             MoodleError::Protocol("Respuesta de token.php no contiene token".into())
         })?;
@@ -94,28 +111,12 @@ impl MoodleClient {
 
     /// Obtiene información básica del sitio y del usuario llamando a `core_webservice_get_site_info`.
     pub async fn get_site_info(&self, wstoken: &str, priority: Priority) -> Result<SiteInfo> {
-        let rest_url = self.rest_url();
         let params = [
             ("wstoken", wstoken),
             ("wsfunction", "core_webservice_get_site_info"),
             ("moodlewsrestformat", "json"),
         ];
 
-        let _permit = self.gate().acquire(priority).await?;
-
-        let response = self
-            .http()
-            .post(&rest_url)
-            .form(&params)
-            .send()
-            .await
-            .map_err(MoodleError::from)?;
-
-        if response.status().as_u16() == 503 {
-            return Err(MoodleError::Maintenance);
-        }
-
-        let body_text = response.text().await.map_err(MoodleError::from)?;
-        decode_envelope::<SiteInfo>(&body_text)
+        self.post_webservice(&params, priority).await
     }
 }
