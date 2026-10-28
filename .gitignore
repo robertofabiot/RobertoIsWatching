@@ -1,0 +1,21 @@
+# Documentación interna / local (excluida del control de versiones)
+docs/
+docs/*
+
+# Artefactos de compilación Rust
+target/
+
+# Secretos y variables de entorno
+.env
+.env.*
+!.env.example
+
+# Bases de datos SQLite
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Logs del sistema
+*.log
