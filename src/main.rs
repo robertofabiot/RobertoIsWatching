@@ -22,6 +22,17 @@ async fn main() {
 
     telemetry::init(&config.rust_log);
 
+    let _pool = match storage::init(&config).await {
+        Ok(pool) => {
+            tracing::info!("Capa de persistencia SQLite inicializada con éxito.");
+            pool
+        }
+        Err(err) => {
+            tracing::error!("Error crítico al inicializar la base de datos: {err}");
+            std::process::exit(1);
+        }
+    };
+
     tracing::info!(
         admin_chat_id = config.admin_chat_id,
         tz = %config.bot_tz,
