@@ -101,7 +101,10 @@ pub async fn handle_login(
 
     match admission {
         AdmissionResult::Closed | AdmissionResult::Full => {
-            tracing::info!(chat_id = chat_id, "Registro rechazado por cupo lleno o cerrado");
+            tracing::info!(
+                chat_id = chat_id,
+                "Registro rechazado por cupo lleno o cerrado"
+            );
             bot.send_message(msg.chat.id, copy::WAITLIST_FULL)
                 .parse_mode(ParseMode::Html)
                 .await?;
@@ -114,9 +117,13 @@ pub async fn handle_login(
                 .unwrap_or_default();
 
             for c in &courses {
-                let _ =
-                    CoursesRepository::upsert_course(&pool, c.id, &c.fullname, c.shortname.as_deref())
-                        .await;
+                let _ = CoursesRepository::upsert_course(
+                    &pool,
+                    c.id,
+                    &c.fullname,
+                    c.shortname.as_deref(),
+                )
+                .await;
                 let _ = CoursesRepository::link_user(&pool, user.chat_id, c.id).await;
             }
 
@@ -145,17 +152,16 @@ pub async fn handle_login(
 }
 
 /// Maneja el comando `/logout` eliminando al usuario y purgando sus alertas pendientes (A-14).
-pub async fn handle_logout(
-    bot: Bot,
-    msg: Message,
-    pool: SqlitePool,
-) -> Result<(), anyhow::Error> {
+pub async fn handle_logout(bot: Bot, msg: Message, pool: SqlitePool) -> Result<(), anyhow::Error> {
     let chat_id = msg.chat.id.0;
     let deleted = UsersRepository::delete(&pool, chat_id).await?;
     let _ = AlertsRepository::purge_chat(&pool, chat_id).await;
 
     if deleted {
-        tracing::info!(chat_id = chat_id, "Sesión de usuario purgada exitosamente (/logout)");
+        tracing::info!(
+            chat_id = chat_id,
+            "Sesión de usuario purgada exitosamente (/logout)"
+        );
         bot.send_message(msg.chat.id, copy::LOGOUT_SUCCESS)
             .parse_mode(ParseMode::Html)
             .await?;
