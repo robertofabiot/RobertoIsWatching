@@ -9,14 +9,17 @@ pub mod submissions;
 pub mod users;
 
 pub use alerts::AlertsRepository;
-pub use assignments::{AssignmentChanges, AssignmentsRepository, UpsertAssignmentResult};
+pub use assignments::{
+    AssignmentChanges, AssignmentsRepository, PendingAssignmentItem, UpsertAssignmentResult,
+};
 pub use courses::CoursesRepository;
 pub use models::*;
 pub use modules::ModulesRepository;
 pub use pool::{build_pool, create_connect_options};
 pub use settings::SettingsRepository;
 pub use submissions::{
-    SubmissionChanges, SubmissionData, SubmissionsRepository, UpsertSubmissionResult,
+    GradedSubmissionItem, SubmissionChanges, SubmissionData, SubmissionsRepository,
+    UpsertSubmissionResult,
 };
 pub use users::{AdmissionResult, UsersRepository};
 

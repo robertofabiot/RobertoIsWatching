@@ -20,6 +20,28 @@ pub enum UpsertAssignmentResult {
     Unchanged(Assignment),
 }
 
+/// Detalle enriquecido de una tarea pendiente con información de su curso y extensiones (A-07).
+#[derive(Debug, Clone, sqlx::FromRow, PartialEq, Eq)]
+pub struct PendingAssignmentItem {
+    pub id: i64,
+    pub name: String,
+    pub course_id: i64,
+    pub course_name: String,
+    pub course_shortname: Option<String>,
+    pub duedate: Option<i64>,
+    pub due_override: Option<i64>,
+}
+
+impl PendingAssignmentItem {
+    pub fn effective_duedate(&self) -> Option<i64> {
+        self.due_override.or(self.duedate)
+    }
+
+    pub fn is_extended(&self) -> bool {
+        self.due_override.is_some()
+    }
+}
+
 /// Repositorio de operaciones para la tabla `assignments`.
 pub struct AssignmentsRepository;
 
@@ -145,6 +167,32 @@ impl AssignmentsRepository {
                AND (a.duedate IS NULL OR a.duedate > ?) \
                AND (us.status IS NULL OR us.status != 'submitted') \
              ORDER BY a.duedate ASC",
+        )
+        .bind(chat_id)
+        .bind(epoch)
+        .fetch_all(pool)
+        .await
+    }
+
+    /// Retorna las tareas pendientes detalladas para el alumno con información de asignatura y extensiones (A-07).
+    pub async fn pending_detailed_for_user(
+        pool: &SqlitePool,
+        chat_id: i64,
+        reference_epoch: Option<i64>,
+    ) -> Result<Vec<PendingAssignmentItem>, sqlx::Error> {
+        let epoch = reference_epoch.unwrap_or_else(|| chrono::Utc::now().timestamp());
+
+        sqlx::query_as::<_, PendingAssignmentItem>(
+            "SELECT a.id, a.name, a.course_id, c.fullname as course_name, c.shortname as course_shortname, \
+                    a.duedate, us.due_override \
+             FROM assignments a \
+             INNER JOIN courses c ON a.course_id = c.id \
+             INNER JOIN user_courses uc ON a.course_id = uc.course_id \
+             LEFT JOIN user_submissions us ON a.id = us.assignment_id AND us.chat_id = uc.chat_id \
+             WHERE uc.chat_id = ? \
+               AND (COALESCE(us.due_override, a.duedate) IS NULL OR COALESCE(us.due_override, a.duedate) = 0 OR COALESCE(us.due_override, a.duedate) > ?) \
+               AND (us.status IS NULL OR us.status != 'submitted') \
+             ORDER BY COALESCE(NULLIF(us.due_override, 0), NULLIF(a.duedate, 0)) ASC",
         )
         .bind(chat_id)
         .bind(epoch)

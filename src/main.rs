@@ -36,6 +36,11 @@ async fn main() {
     );
 
     let bot = bot::create_bot(&config.bot_token);
+
+    if let Err(err) = bot::register_commands(&bot).await {
+        tracing::warn!(error = %err, "No se pudo registrar el menú de comandos en Telegram");
+    }
+
     let moodle = MoodleClient::new(moodle::DEFAULT_BASE_URL);
     let config_arc = Arc::new(config);
 

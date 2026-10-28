@@ -33,6 +33,18 @@ pub enum UpsertSubmissionResult {
     Unchanged(UserSubmission),
 }
 
+/// Detalle enriquecido de una entrega calificada con información de curso y feedback (RF-05, RF-08).
+#[derive(Debug, Clone, sqlx::FromRow, PartialEq, Eq)]
+pub struct GradedSubmissionItem {
+    pub assignment_id: i64,
+    pub assignment_name: String,
+    pub course_id: i64,
+    pub course_name: String,
+    pub grade: Option<String>,
+    pub feedback: Option<String>,
+    pub updated_at: chrono::NaiveDateTime,
+}
+
 /// Repositorio de operaciones para la tabla `user_submissions`.
 pub struct SubmissionsRepository;
 
@@ -61,6 +73,26 @@ impl SubmissionsRepository {
         sqlx::query_as::<_, UserSubmission>(
             "SELECT chat_id, assignment_id, status, graded, grade, feedback, due_override, updated_at \
              FROM user_submissions WHERE chat_id = ? ORDER BY assignment_id ASC",
+        )
+        .bind(chat_id)
+        .fetch_all(pool)
+        .await
+    }
+
+    /// Obtiene las entregas ya calificadas del estudiante con nombre de tarea y curso (RF-08).
+    pub async fn graded_for_user_detailed(
+        pool: &SqlitePool,
+        chat_id: i64,
+    ) -> Result<Vec<GradedSubmissionItem>, sqlx::Error> {
+        sqlx::query_as::<_, GradedSubmissionItem>(
+            "SELECT us.assignment_id, a.name as assignment_name, c.id as course_id, c.fullname as course_name, \
+                    us.grade, us.feedback, us.updated_at \
+             FROM user_submissions us \
+             INNER JOIN assignments a ON us.assignment_id = a.id \
+             INNER JOIN courses c ON a.course_id = c.id \
+             INNER JOIN user_courses uc ON c.id = uc.course_id AND us.chat_id = uc.chat_id \
+             WHERE us.chat_id = ? AND (us.graded = 1 OR us.grade IS NOT NULL) \
+             ORDER BY us.updated_at DESC",
         )
         .bind(chat_id)
         .fetch_all(pool)

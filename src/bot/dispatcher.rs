@@ -1,7 +1,13 @@
 use crate::bot::commands::{AdminCommand, Command};
 use crate::bot::handlers::admin::handle_admin;
+use crate::bot::handlers::assignments::handle_pendientes;
 use crate::bot::handlers::auth::{handle_login, handle_logout};
+use crate::bot::handlers::config::{handle_config, handle_config_callback};
+use crate::bot::handlers::courses::handle_cursos;
+use crate::bot::handlers::grades::handle_notas;
 use crate::bot::handlers::start::{handle_ayuda, handle_start};
+use crate::bot::handlers::summary::handle_resumen;
+use crate::bot::handlers::sync::handle_sync;
 use crate::bot::rate_limit::LoginRateLimiter;
 use crate::bot::Bot;
 use crate::config::Config;
@@ -24,13 +30,25 @@ pub fn create_dispatcher(
         .branch(dptree::case![Command::Start].endpoint(handle_start))
         .branch(dptree::case![Command::Ayuda].endpoint(handle_ayuda))
         .branch(dptree::case![Command::Login(args)].endpoint(handle_login))
+        .branch(dptree::case![Command::Cursos].endpoint(handle_cursos))
+        .branch(dptree::case![Command::Pendientes].endpoint(handle_pendientes))
+        .branch(dptree::case![Command::Notas].endpoint(handle_notas))
+        .branch(dptree::case![Command::Resumen].endpoint(handle_resumen))
+        .branch(dptree::case![Command::Sync].endpoint(handle_sync))
+        .branch(dptree::case![Command::Config].endpoint(handle_config))
         .branch(dptree::case![Command::Logout].endpoint(handle_logout));
 
     let admin_handler = teloxide::filter_command::<AdminCommand, _>().endpoint(handle_admin);
 
-    let handler = Update::filter_message()
+    let message_handler = Update::filter_message()
         .branch(student_handler)
         .branch(admin_handler);
+
+    let callback_handler = Update::filter_callback_query().endpoint(handle_config_callback);
+
+    let handler = dptree::entry()
+        .branch(message_handler)
+        .branch(callback_handler);
 
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![pool, moodle, config, rate_limiter])

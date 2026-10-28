@@ -1,3 +1,9 @@
 pub mod admin;
+pub mod assignments;
 pub mod auth;
+pub mod config;
+pub mod courses;
+pub mod grades;
 pub mod start;
+pub mod summary;
+pub mod sync;

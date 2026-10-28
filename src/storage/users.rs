@@ -118,6 +118,68 @@ impl UsersRepository {
         Ok(user)
     }
 
+    /// Actualiza la configuración completa de resúmenes del usuario (RF-07).
+    pub async fn update_summary_config(
+        pool: &SqlitePool,
+        chat_id: i64,
+        enabled: bool,
+        times: &str,
+        days: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE users SET summary_enabled = ?, summary_times = ?, summary_days = ? WHERE chat_id = ?",
+        )
+        .bind(enabled)
+        .bind(times)
+        .bind(days)
+        .bind(chat_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Modifica únicamente si los resúmenes están habilitados para el usuario.
+    pub async fn set_summary_enabled(
+        pool: &SqlitePool,
+        chat_id: i64,
+        enabled: bool,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET summary_enabled = ? WHERE chat_id = ?")
+            .bind(enabled)
+            .bind(chat_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Modifica los horarios (`HH:MM`) del resumen en formato JSON.
+    pub async fn set_summary_times(
+        pool: &SqlitePool,
+        chat_id: i64,
+        times_json: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET summary_times = ? WHERE chat_id = ?")
+            .bind(times_json)
+            .bind(chat_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Modifica los días activos del resumen en formato JSON.
+    pub async fn set_summary_days(
+        pool: &SqlitePool,
+        chat_id: i64,
+        days_json: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET summary_days = ? WHERE chat_id = ?")
+            .bind(days_json)
+            .bind(chat_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     /// Marca un usuario como inactivo, especificando la razón y limpiando el token por seguridad (§0.3/A-15).
     pub async fn mark_inactive(
         pool: &SqlitePool,
