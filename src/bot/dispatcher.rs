@@ -1,4 +1,5 @@
-use crate::bot::commands::Command;
+use crate::bot::commands::{AdminCommand, Command};
+use crate::bot::handlers::admin::handle_admin;
 use crate::bot::handlers::auth::{handle_login, handle_logout};
 use crate::bot::handlers::start::{handle_ayuda, handle_start};
 use crate::bot::rate_limit::LoginRateLimiter;
@@ -19,13 +20,17 @@ pub fn create_dispatcher(
 ) -> Dispatcher<Bot, anyhow::Error, teloxide::dispatching::DefaultKey> {
     let rate_limiter = LoginRateLimiter::new();
 
-    let command_handler = teloxide::filter_command::<Command, _>()
+    let student_handler = teloxide::filter_command::<Command, _>()
         .branch(dptree::case![Command::Start].endpoint(handle_start))
         .branch(dptree::case![Command::Ayuda].endpoint(handle_ayuda))
         .branch(dptree::case![Command::Login(args)].endpoint(handle_login))
         .branch(dptree::case![Command::Logout].endpoint(handle_logout));
 
-    let handler = Update::filter_message().branch(command_handler);
+    let admin_handler = teloxide::filter_command::<AdminCommand, _>().endpoint(handle_admin);
+
+    let handler = Update::filter_message()
+        .branch(student_handler)
+        .branch(admin_handler);
 
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![pool, moodle, config, rate_limiter])

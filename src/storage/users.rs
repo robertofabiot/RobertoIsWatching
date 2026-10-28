@@ -56,6 +56,16 @@ impl UsersRepository {
         Ok(row.0)
     }
 
+    /// Cuenta los estudiantes con token expirado.
+    pub async fn count_expired(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM users WHERE is_active = 0 AND inactive_reason = 'token_expired'",
+        )
+        .fetch_one(pool)
+        .await?;
+        Ok(row.0)
+    }
+
     /// Actualiza o registra la sesión de login de un usuario (A-12).
     /// Si el CIF ya existía vinculado a otro chat_id, reemplaza el vínculo anterior.
     /// Si el chat_id ya existía, reactiva la cuenta y renueva el token.

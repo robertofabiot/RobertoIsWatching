@@ -19,7 +19,7 @@ pub enum Command {
 
 /// Comandos exclusivos para el administrador (`ADMIN_CHAT_ID`) (RF-10).
 #[derive(BotCommands, Clone, Debug, PartialEq, Eq)]
-#[command(rename_rule = "lowercase")]
+#[command(rename_rule = "snake_case")]
 pub enum AdminCommand {
     AdminStats,
     ToggleRegistro,
@@ -39,5 +39,21 @@ mod tests {
             Command::Login("24014121 MiClave123".to_string())
         );
         assert_eq!(Command::parse("/logout", "").unwrap(), Command::Logout);
+    }
+
+    #[test]
+    fn test_parse_admin_commands() {
+        assert_eq!(
+            AdminCommand::parse("/admin_stats", "").unwrap(),
+            AdminCommand::AdminStats
+        );
+        assert_eq!(
+            AdminCommand::parse("/toggle_registro", "").unwrap(),
+            AdminCommand::ToggleRegistro
+        );
+        assert_eq!(
+            AdminCommand::parse("/set_max_users 50", "").unwrap(),
+            AdminCommand::SetMaxUsers(50)
+        );
     }
 }
