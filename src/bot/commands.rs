@@ -13,6 +13,8 @@ pub enum Command {
     Ayuda,
     #[command(description = "Vinculación segura: /login <CIF> <CONTRASEÑA>")]
     Login(String),
+    #[command(description = "Asignaturas matriculadas bajo vigilancia 24/7")]
+    Cursos,
     #[command(description = "Cierre de sesión y purga de datos")]
     Logout,
 }
@@ -38,6 +40,7 @@ mod tests {
             Command::parse("/login 24014121 MiClave123", "").unwrap(),
             Command::Login("24014121 MiClave123".to_string())
         );
+        assert_eq!(Command::parse("/cursos", "").unwrap(), Command::Cursos);
         assert_eq!(Command::parse("/logout", "").unwrap(), Command::Logout);
     }
 
