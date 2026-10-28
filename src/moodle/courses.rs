@@ -31,6 +31,33 @@ pub struct MoodleAssignment {
     pub timemodified: Option<i64>,
 }
 
+/// Módulo o recurso de estudio extraído de `core_course_get_contents` (RF-06).
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct ModuleInfo {
+    pub id: i64,
+    pub course_id: i64,
+    pub section_name: Option<String>,
+    pub name: String,
+    pub mod_name: String,
+    pub url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CourseSection {
+    #[allow(dead_code)]
+    id: i64,
+    name: String,
+    modules: Vec<CourseModuleRaw>,
+}
+
+#[derive(Deserialize)]
+struct CourseModuleRaw {
+    id: i64,
+    name: String,
+    modname: String,
+    url: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct AssignmentsContainer {
     courses: Vec<CourseAssignmentsEntry>,
@@ -199,6 +226,110 @@ impl MoodleClient {
                             chat_id = donor.chat_id,
                             course_id = course_id,
                             "Token donante inválido o revocado. Rotando al siguiente donante..."
+                        );
+                        invalid.push(donor.chat_id);
+                        last_err = Some(err);
+                        continue;
+                    } else {
+                        last_err = Some(err);
+                    }
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or(MoodleError::InvalidToken))
+    }
+
+    /// Consulta los contenidos y recursos de un curso utilizando un wstoken específico (`core_course_get_contents`).
+    pub async fn fetch_course_contents(
+        &self,
+        wstoken: &str,
+        course_id: i64,
+        priority: Priority,
+    ) -> Result<Vec<ModuleInfo>> {
+        let rest_url = self.rest_url();
+        let course_id_str = course_id.to_string();
+        let params = [
+            ("wstoken", wstoken),
+            ("wsfunction", "core_course_get_contents"),
+            ("moodlewsrestformat", "json"),
+            ("courseid", &course_id_str),
+        ];
+
+        let _permit = self.gate().acquire(priority).await?;
+
+        let response = self
+            .http()
+            .post(&rest_url)
+            .form(&params)
+            .send()
+            .await
+            .map_err(MoodleError::from)?;
+
+        if response.status().as_u16() == 503 {
+            return Err(MoodleError::Maintenance);
+        }
+
+        let body_text = response.text().await.map_err(MoodleError::from)?;
+        let sections: Vec<CourseSection> = decode_envelope(&body_text)?;
+
+        let mut modules = Vec::new();
+        for section in sections {
+            let section_name = if section.name.trim().is_empty() {
+                None
+            } else {
+                Some(section.name)
+            };
+
+            for m in section.modules {
+                modules.push(ModuleInfo {
+                    id: m.id,
+                    course_id,
+                    section_name: section_name.clone(),
+                    name: m.name,
+                    mod_name: m.modname,
+                    url: m.url,
+                });
+            }
+        }
+
+        Ok(modules)
+    }
+
+    /// Consulta los contenidos de un curso con rotación y failover de donantes (RF-06).
+    pub async fn fetch_course_contents_with_failover(
+        &self,
+        donors: &[DonorToken],
+        course_id: i64,
+        priority: Priority,
+    ) -> Result<FailoverOutcome<Vec<ModuleInfo>>> {
+        if donors.is_empty() {
+            return Err(MoodleError::Protocol(
+                "No hay donantes disponibles para consultar los contenidos del curso".into(),
+            ));
+        }
+
+        let mut invalid = Vec::new();
+        let mut last_err = None;
+
+        for donor in donors {
+            match self
+                .fetch_course_contents(&donor.token, course_id, priority)
+                .await
+            {
+                Ok(modules) => {
+                    return Ok(FailoverOutcome {
+                        data: modules,
+                        donor: donor.clone(),
+                        invalid,
+                    });
+                }
+                Err(err) => {
+                    if err.is_token_error() {
+                        tracing::warn!(
+                            chat_id = donor.chat_id,
+                            course_id = course_id,
+                            "Token donante inválido al obtener contenidos. Rotando al siguiente donante..."
                         );
                         invalid.push(donor.chat_id);
                         last_err = Some(err);
