@@ -102,6 +102,18 @@ pub fn alert_new_assignment(task: &str, course: &str, due_date: &str) -> String 
     )
 }
 
+pub fn alert_new_material(material: &str, course: &str, section: Option<&str>) -> String {
+    let section_str = section
+        .map(|s| format!(" en la sección <i>{}</i>", escape_html(s)))
+        .unwrap_or_default();
+    format!(
+        "📚 <b>Roberto's watching new materials.</b> Tu profesor acaba de subir <b>[{}]</b> en <b>[{}]</b>{}.",
+        escape_html(material),
+        escape_html(course),
+        section_str
+    )
+}
+
 pub fn alert_deadline_24h(task: &str) -> String {
     format!(
         "⏰ <b>Roberto's watching the clock (Quedan 24h).</b> Te queda exactamente 1 día para entregar <b>[{}]</b>. Ve abriendo el documento.",

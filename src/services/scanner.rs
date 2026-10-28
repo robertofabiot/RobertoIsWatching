@@ -1,14 +1,17 @@
 //! Motor de escaneo compartido en segundo plano (PR #6, Plan Maestro §4).
 //! Ejecuta un worker loop en Tokio con periodicidad configurable y parada limpia.
 
-use crate::bot::Bot;
+use crate::bot::{copy, Bot};
 use crate::config::Config;
 use crate::moodle::gate::Priority;
 use crate::moodle::MoodleClient;
+use crate::services::alerts::AlertService;
 use crate::services::session;
 use crate::storage::assignments::UpsertAssignmentResult;
+use crate::storage::submissions::SubmissionData;
 use crate::storage::{
-    AssignmentsRepository, CoursesRepository, ModulesRepository, UsersRepository,
+    AssignmentsRepository, CoursesRepository, ModulesRepository, SubmissionsRepository,
+    UsersRepository,
 };
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -163,6 +166,7 @@ impl ScannerWorker {
             }
 
             // Upsert de tareas
+            let mut newly_inserted_assignments = Vec::new();
             for assign in assignments_outcome.data {
                 let res = AssignmentsRepository::upsert(
                     &self.pool,
@@ -176,11 +180,97 @@ impl ScannerWorker {
                 .await?;
 
                 match res {
-                    UpsertAssignmentResult::Inserted(_) => {
+                    UpsertAssignmentResult::Inserted(inserted_assign) => {
                         summary.new_assignments += 1;
+                        if !is_baseline {
+                            newly_inserted_assignments.push(inserted_assign);
+                        }
                     }
                     UpsertAssignmentResult::Updated { .. } => {}
                     UpsertAssignmentResult::Unchanged(_) => {}
+                }
+            }
+
+            // Si el curso ya tenía línea base, notificar a los alumnos inscritos (RF-03)
+            // tras confirmar visibilidad individualmente con su token (A-07)
+            if !is_baseline && !newly_inserted_assignments.is_empty() {
+                let enrolled_students =
+                    UsersRepository::active_users_for_course(&self.pool, course.id).await?;
+
+                for assign in &newly_inserted_assignments {
+                    for student in &enrolled_students {
+                        // Confirmar visibilidad con el token del propio alumno (A-07)
+                        match self
+                            .moodle
+                            .fetch_user_submission(
+                                &student.wstoken,
+                                assign.id,
+                                student.uam_user_id,
+                                Priority::Background,
+                            )
+                            .await
+                        {
+                            Ok(sub) => {
+                                // Guardar registro inicial de entrega
+                                let _ = SubmissionsRepository::upsert(
+                                    &self.pool,
+                                    SubmissionData {
+                                        chat_id: student.chat_id,
+                                        assignment_id: assign.id,
+                                        status: sub.status.as_deref(),
+                                        graded: sub.graded,
+                                        grade: sub.grade.as_deref(),
+                                        feedback: sub.feedback_text.as_deref(),
+                                        due_override: sub.due_override,
+                                    },
+                                )
+                                .await;
+
+                                let effective_due =
+                                    sub.due_override.or(assign.duedate).unwrap_or(0);
+                                let due_str = if effective_due == 0 {
+                                    "Sin fecha límite".to_string()
+                                } else {
+                                    copy::format_epoch_local(effective_due, self.config.bot_tz)
+                                };
+
+                                let msg = copy::alert_new_assignment(
+                                    &assign.name,
+                                    &course.fullname,
+                                    &due_str,
+                                );
+                                let alert_key =
+                                    format!("new_assign:{}:{}", student.chat_id, assign.id);
+
+                                if AlertService::dispatch(
+                                    &self.pool,
+                                    &self.bot,
+                                    &alert_key,
+                                    "new_assignment",
+                                    student.chat_id,
+                                    &msg,
+                                )
+                                .await
+                                .unwrap_or(false)
+                                {
+                                    summary.alerts_dispatched += 1;
+                                }
+                            }
+                            Err(err) if err.is_token_error() => {
+                                let _ =
+                                    session::expire_user(&self.pool, &self.bot, student.chat_id)
+                                        .await;
+                            }
+                            Err(err) => {
+                                tracing::debug!(
+                                    assign_id = assign.id,
+                                    chat_id = student.chat_id,
+                                    error = %err,
+                                    "Tarea no visible para este estudiante (grupo/sección distinta o sin acceso)"
+                                );
+                            }
+                        }
+                    }
                 }
             }
 
@@ -511,6 +601,140 @@ mod tests {
         assert_eq!(summary2.courses_scanned, 1);
         assert_eq!(summary2.new_assignments, 0);
         assert_eq!(summary2.new_materials, 0);
+        assert_eq!(summary2.alerts_dispatched, 0);
+    }
+
+    #[tokio::test]
+    async fn test_scanner_new_assignment_alert_with_visibility_check() {
+        use crate::bot::create_bot_with_url;
+        use crate::storage::AlertsRepository;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let moodle_server = MockServer::start().await;
+        let telegram_server = MockServer::start().await;
+
+        // Mock Telegram SendMessage
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {
+                    "message_id": 99,
+                    "date": 1700000000,
+                    "chat": { "id": 777, "type": "private" },
+                    "text": "alerta"
+                }
+            })))
+            .mount(&telegram_server)
+            .await;
+
+        // Mock Moodle mod_assign_get_assignments devolviendo tarea nueva 6001
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains(
+                "wsfunction=mod_assign_get_assignments",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "courses": [{
+                    "id": 600,
+                    "assignments": [{
+                        "id": 6001,
+                        "cmid": 7001,
+                        "course": 600,
+                        "name": "Tarea Diferencial",
+                        "duedate": 1800000000
+                    }]
+                }]
+            })))
+            .mount(&moodle_server)
+            .await;
+
+        // Mock Moodle fetch_user_submission confirmando visibilidad y devolviendo due_override (A-07)
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains(
+                "wsfunction=mod_assign_get_submission_status",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "lastattempt": {
+                    "submission": {
+                        "id": 8881,
+                        "status": "new"
+                    },
+                    "extensionduedate": 1800050000
+                }
+            })))
+            .mount(&moodle_server)
+            .await;
+
+        // Mock core_course_get_contents vacío
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains(
+                "wsfunction=core_course_get_contents",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&moodle_server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_scanner_new_assign_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = crate::storage::init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", telegram_server.uri())).unwrap(),
+        );
+        let moodle = MoodleClient::new(moodle_server.uri());
+
+        // Insertar curso 600 y marcarlo previamente como escaneado para establecer línea base
+        CoursesRepository::upsert_course(&pool, 600, "Cálculo II", Some("CALC2"))
+            .await
+            .unwrap();
+        CoursesRepository::touch_scanned(&pool, 600).await.unwrap();
+
+        // Insertar usuario 777
+        UsersRepository::upsert_login(&pool, 777, "24010777", 77, "Estudiante 7", "token_777")
+            .await
+            .unwrap();
+        CoursesRepository::link_user(&pool, 777, 600).await.unwrap();
+
+        let worker = ScannerWorker::new(pool.clone(), moodle, bot, config);
+
+        // Ciclo 1: detecta tarea nueva, confirma visibilidad con token del alumno y despacha alerta
+        let summary1 = worker.run_scan_cycle().await.unwrap();
+        assert_eq!(summary1.courses_scanned, 1);
+        assert_eq!(summary1.new_assignments, 1);
+        assert_eq!(summary1.alerts_dispatched, 1);
+
+        // Comprobar que la alerta quedó reclamada en sent_alerts
+        let claimed = AlertsRepository::is_claimed(&pool, "new_assign:777:6001")
+            .await
+            .unwrap();
+        assert!(claimed);
+
+        // Comprobar que due_override fue persistido en user_submissions (A-07)
+        let sub = SubmissionsRepository::get(&pool, 777, 6001)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sub.due_override, Some(1800050000));
+
+        // Ciclo 2: Segundo escaneo no duplica alerta (RF-09 idempotencia)
+        let summary2 = worker.run_scan_cycle().await.unwrap();
+        assert_eq!(summary2.new_assignments, 0);
         assert_eq!(summary2.alerts_dispatched, 0);
     }
 }
