@@ -23,6 +23,8 @@ pub enum Command {
     Resumen,
     #[command(description = "Fuerza sincronización con Moodle (cooldown de 10 min)")]
     Sync,
+    #[command(description = "Ajusta horarios y frecuencia de tus resúmenes")]
+    Config,
     #[command(description = "Cierre de sesión y purga de datos")]
     Logout,
 }
@@ -56,6 +58,7 @@ mod tests {
         assert_eq!(Command::parse("/notas", "").unwrap(), Command::Notas);
         assert_eq!(Command::parse("/resumen", "").unwrap(), Command::Resumen);
         assert_eq!(Command::parse("/sync", "").unwrap(), Command::Sync);
+        assert_eq!(Command::parse("/config", "").unwrap(), Command::Config);
         assert_eq!(Command::parse("/logout", "").unwrap(), Command::Logout);
     }
 
