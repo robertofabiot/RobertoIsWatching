@@ -6,7 +6,10 @@ use crate::config::Config;
 use crate::moodle::gate::Priority;
 use crate::moodle::MoodleClient;
 use crate::services::session;
-use crate::storage::{CoursesRepository, UsersRepository};
+use crate::storage::assignments::UpsertAssignmentResult;
+use crate::storage::{
+    AssignmentsRepository, CoursesRepository, ModulesRepository, UsersRepository,
+};
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use std::time::Duration;
@@ -110,8 +113,8 @@ impl ScannerWorker {
                 .collect();
 
             // 2. Obtener contenidos/módulos con failover
-            if !valid_donors.is_empty() {
-                if let Ok(contents_outcome) = self
+            let contents_outcome_opt = if !valid_donors.is_empty() {
+                match self
                     .moodle
                     .fetch_course_contents_with_failover(
                         &valid_donors,
@@ -120,19 +123,88 @@ impl ScannerWorker {
                     )
                     .await
                 {
-                    for invalid_chat_id in &contents_outcome.invalid {
-                        if let Err(e) =
-                            session::expire_user(&self.pool, &self.bot, *invalid_chat_id).await
-                        {
-                            tracing::error!(
-                                chat_id = invalid_chat_id,
-                                error = %e,
-                                "Error al expirar sesión de usuario con token revocado en contenidos"
-                            );
+                    Ok(outcome) => {
+                        for invalid_chat_id in &outcome.invalid {
+                            if let Err(e) =
+                                session::expire_user(&self.pool, &self.bot, *invalid_chat_id).await
+                            {
+                                tracing::error!(
+                                    chat_id = invalid_chat_id,
+                                    error = %e,
+                                    "Error al expirar sesión de usuario con token revocado en contenidos"
+                                );
+                            }
                         }
+                        Some(outcome)
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            course_id = course.id,
+                            error = %err,
+                            "Error al obtener contenidos del curso con failover"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            // 3. Siembra silenciosa (Línea base A-03):
+            // Si `last_scanned IS NULL`, el curso nunca había sido escaneado previamente.
+            // Se persisten tareas y módulos en SQLite sin emitir alertas para evitar la tormenta
+            // de notificaciones sobre ítems preexistentes.
+            let is_baseline = course.last_scanned.is_none();
+            if is_baseline {
+                tracing::info!(
+                    course_id = course.id,
+                    "Primer escaneo del curso detectado: ejecutando siembra silenciosa (A-03)"
+                );
+            }
+
+            // Upsert de tareas
+            for assign in assignments_outcome.data {
+                let res = AssignmentsRepository::upsert(
+                    &self.pool,
+                    assign.id,
+                    assign.cmid,
+                    course.id,
+                    &assign.name,
+                    Some(assign.duedate),
+                    assign.cutoffdate,
+                )
+                .await?;
+
+                match res {
+                    UpsertAssignmentResult::Inserted(_) => {
+                        summary.new_assignments += 1;
+                    }
+                    UpsertAssignmentResult::Updated { .. } => {}
+                    UpsertAssignmentResult::Unchanged(_) => {}
+                }
+            }
+
+            // Upsert de módulos
+            if let Some(contents_outcome) = contents_outcome_opt {
+                for m in contents_outcome.data {
+                    if let Some(_inserted) = ModulesRepository::upsert_returning_new(
+                        &self.pool,
+                        m.id,
+                        course.id,
+                        m.section_name.as_deref(),
+                        Some(&m.mod_name),
+                        &m.name,
+                        m.url.as_deref(),
+                    )
+                    .await?
+                    {
+                        summary.new_materials += 1;
                     }
                 }
             }
+
+            // Actualizar marca de último escaneo del curso
+            CoursesRepository::touch_scanned(&self.pool, course.id).await?;
 
             summary.courses_scanned += 1;
         }
@@ -328,5 +400,117 @@ mod tests {
         // Verificar que el usuario 222 sigue activo
         let u2 = UsersRepository::get(&pool, 222).await.unwrap().unwrap();
         assert!(u2.is_active);
+    }
+
+    #[tokio::test]
+    async fn test_scanner_silent_baseline_seeding() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        // Responder tareas
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains(
+                "wsfunction=mod_assign_get_assignments",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "courses": [{
+                    "id": 500,
+                    "assignments": [
+                        {
+                            "id": 5001,
+                            "cmid": 6001,
+                            "course": 500,
+                            "name": "Tarea Base 1",
+                            "duedate": 1800000000
+                        },
+                        {
+                            "id": 5002,
+                            "cmid": 6002,
+                            "course": 500,
+                            "name": "Tarea Base 2",
+                            "duedate": 1800000000
+                        }
+                    ]
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        // Responder contenidos
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains(
+                "wsfunction=core_course_get_contents",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                {
+                    "id": 7001,
+                    "name": "Tema 1",
+                    "modules": [
+                        {
+                            "id": 8001,
+                            "name": "Syllabus PDF",
+                            "modname": "resource",
+                            "url": "https://moodle/syllabus.pdf"
+                        }
+                    ]
+                }
+            ])))
+            .mount(&server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_scanner_baseline_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = crate::storage::init(&config).await.unwrap();
+        let bot = crate::bot::create_bot(&config.bot_token);
+        let moodle = MoodleClient::new(server.uri());
+
+        // Insertar curso 500 (nace con last_scanned = NULL)
+        CoursesRepository::upsert_course(&pool, 500, "Curso Línea Base", Some("BASE"))
+            .await
+            .unwrap();
+        let c_init = CoursesRepository::get(&pool, 500).await.unwrap().unwrap();
+        assert!(c_init.last_scanned.is_none());
+
+        // Insertar usuario matriculado
+        UsersRepository::upsert_login(&pool, 555, "24010555", 55, "Alumno Base", "token_555")
+            .await
+            .unwrap();
+        CoursesRepository::link_user(&pool, 555, 500).await.unwrap();
+
+        let worker = ScannerWorker::new(pool.clone(), moodle, bot, config);
+
+        // Ciclo 1: Siembra silenciosa
+        let summary1 = worker.run_scan_cycle().await.unwrap();
+        assert_eq!(summary1.courses_scanned, 1);
+        assert_eq!(summary1.new_assignments, 2);
+        assert_eq!(summary1.new_materials, 1);
+        assert_eq!(summary1.alerts_dispatched, 0);
+
+        // Verificar que touch_scanned actualizó last_scanned
+        let c_after = CoursesRepository::get(&pool, 500).await.unwrap().unwrap();
+        assert!(c_after.last_scanned.is_some());
+
+        // Ciclo 2: Segundo ciclo con los mismos datos no debe registrar nada nuevo ni generar alertas
+        let summary2 = worker.run_scan_cycle().await.unwrap();
+        assert_eq!(summary2.courses_scanned, 1);
+        assert_eq!(summary2.new_assignments, 0);
+        assert_eq!(summary2.new_materials, 0);
+        assert_eq!(summary2.alerts_dispatched, 0);
     }
 }
