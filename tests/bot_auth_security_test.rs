@@ -56,10 +56,17 @@ async fn test_login_password_never_reaches_tracing_logs_or_storage() {
 
     Mock::given(method("POST"))
         .and(path("/webservice/rest/server.php"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "userid": 777,
-            "fullname": "Estudiante Prueba Seguridad"
-        })))
+        .respond_with(|req: &wiremock::Request| {
+            let body = std::str::from_utf8(&req.body).unwrap_or("");
+            if body.contains("core_enrol_get_users_courses") {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([]))
+            } else {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "userid": 777,
+                    "fullname": "Estudiante Prueba Seguridad"
+                }))
+            }
+        })
         .mount(&moodle_server)
         .await;
 

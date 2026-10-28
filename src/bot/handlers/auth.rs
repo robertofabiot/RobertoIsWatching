@@ -1,7 +1,7 @@
 use crate::bot::rate_limit::LoginRateLimiter;
 use crate::bot::{copy, Bot};
 use crate::moodle::{MoodleClient, MoodleError, Priority};
-use crate::storage::{AdmissionResult, AlertsRepository, CoursesRepository, UsersRepository};
+use crate::storage::{AdmissionResult, AlertsRepository, UsersRepository};
 use sqlx::SqlitePool;
 use teloxide::prelude::*;
 use teloxide::types::ParseMode;
@@ -110,28 +110,32 @@ pub async fn handle_login(
                 .await?;
         }
         AdmissionResult::Admitted(user) | AdmissionResult::AlreadyMember(user) => {
-            // 7. Sincronizar y registrar los cursos activos del alumno
-            let courses = moodle
-                .user_courses(&user.wstoken, user.uam_user_id, Priority::Interactive)
-                .await
-                .unwrap_or_default();
-
-            for c in &courses {
-                let _ = CoursesRepository::upsert_course(
-                    &pool,
-                    c.id,
-                    &c.fullname,
-                    c.shortname.as_deref(),
-                )
-                .await;
-                let _ = CoursesRepository::link_user(&pool, user.chat_id, c.id).await;
-            }
+            // 7. Sincronizar y sembrar en silencio cursos, tareas y entregas del alumno (A-03, A-04)
+            let refresh_summary = match crate::services::sync::refresh_user(
+                &pool,
+                &moodle,
+                user.chat_id,
+                Priority::Interactive,
+            )
+            .await
+            {
+                Ok(summary) => summary,
+                Err(err) => {
+                    tracing::warn!(
+                        chat_id = chat_id,
+                        error = %err,
+                        "Advertencia durante siembra silenciosa en login de usuario"
+                    );
+                    crate::services::sync::RefreshSummary::default()
+                }
+            };
 
             tracing::info!(
                 chat_id = chat_id,
                 cif = %cif,
-                courses = courses.len(),
-                "Usuario admitido y cursos vinculados exitosamente"
+                courses = refresh_summary.courses_count,
+                assignments = refresh_summary.assignments_count,
+                "Usuario admitido y sembrado exitosamente en silencio"
             );
 
             let welcome_msg = format!(
@@ -139,7 +143,7 @@ pub async fn handle_login(
                  Escribe <code>/pendientes</code> para ver tus tareas o <code>/cursos</code> para ver tus asignaturas.",
                 copy::LOGIN_SUCCESS_PREFIX,
                 user.fullname,
-                courses.len()
+                refresh_summary.courses_count
             );
 
             bot.send_message(msg.chat.id, welcome_msg)
