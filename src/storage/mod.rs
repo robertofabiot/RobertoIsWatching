@@ -4,7 +4,7 @@ pub mod users;
 
 pub use models::*;
 pub use pool::{build_pool, create_connect_options};
-pub use users::UsersRepository;
+pub use users::{AdmissionResult, UsersRepository};
 
 use crate::config::Config;
 use sqlx::SqlitePool;
