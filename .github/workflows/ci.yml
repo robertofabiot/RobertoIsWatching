@@ -1,0 +1,41 @@
+name: CI Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  dod-gate:
+    name: Definition of Done Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting (rustfmt)
+        run: cargo fmt --all -- --check
+
+      - name: Lint with Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run unit tests
+        run: cargo test --verbose
+
+      - name: Verify zero OpenSSL dependency (A-01)
+        run: |
+          if cargo tree -i openssl-sys 2>&1 | grep -q "did not match"; then
+            echo "✅ Verificación exitosa: Sin dependencias de openssl-sys"
+          else
+            echo "❌ Error: openssl-sys fue detectado en el grafo de dependencias"
+            exit 1
+          fi
