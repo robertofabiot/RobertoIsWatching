@@ -167,3 +167,139 @@ fn validate_bot_token(token: &str) -> Result<(), ConfigError> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn valid_env() -> HashMap<&'static str, &'static str> {
+        let mut map = HashMap::new();
+        map.insert("TELEGRAM_BOT_TOKEN", "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ");
+        map.insert("ADMIN_CHAT_ID", "1125347763");
+        map.insert("DATABASE_URL", "sqlite://robertos_watching.db?mode=rwc");
+        map.insert("BOT_TZ", "America/Managua");
+        map
+    }
+
+    #[test]
+    fn test_config_ok_with_defaults() {
+        let env = valid_env();
+        let config = Config::from_iter(env).expect("Configuración válida falló");
+        assert_eq!(config.bot_token, "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ");
+        assert_eq!(config.admin_chat_id, 1125347763);
+        assert_eq!(
+            config.database_url,
+            "sqlite://robertos_watching.db?mode=rwc"
+        );
+        assert_eq!(config.max_users_default, 300);
+        assert_eq!(config.bot_tz, chrono_tz::America::Managua);
+        assert_eq!(config.rust_log, "info,robertos_watching_bot=debug");
+    }
+
+    #[test]
+    fn test_config_ok_custom_values() {
+        let mut env = valid_env();
+        env.insert("MAX_USERS_DEFAULT", "500");
+        env.insert("RUST_LOG", "trace");
+        let config = Config::from_iter(env).expect("Configuración personalizada falló");
+        assert_eq!(config.max_users_default, 500);
+        assert_eq!(config.rust_log, "trace");
+    }
+
+    #[test]
+    fn test_config_missing_bot_token() {
+        let mut env = valid_env();
+        env.remove("TELEGRAM_BOT_TOKEN");
+        let err = Config::from_iter(env).unwrap_err();
+        assert_eq!(err, ConfigError::MissingVar("TELEGRAM_BOT_TOKEN"));
+    }
+
+    #[test]
+    fn test_config_missing_admin_chat_id() {
+        let mut env = valid_env();
+        env.remove("ADMIN_CHAT_ID");
+        let err = Config::from_iter(env).unwrap_err();
+        assert_eq!(err, ConfigError::MissingVar("ADMIN_CHAT_ID"));
+    }
+
+    #[test]
+    fn test_config_missing_database_url() {
+        let mut env = valid_env();
+        env.remove("DATABASE_URL");
+        let err = Config::from_iter(env).unwrap_err();
+        assert_eq!(err, ConfigError::MissingVar("DATABASE_URL"));
+    }
+
+    #[test]
+    fn test_config_missing_bot_tz() {
+        let mut env = valid_env();
+        env.remove("BOT_TZ");
+        let err = Config::from_iter(env).unwrap_err();
+        assert_eq!(err, ConfigError::MissingVar("BOT_TZ"));
+    }
+
+    #[test]
+    fn test_config_invalid_token_no_colon() {
+        let mut env = valid_env();
+        env.insert("TELEGRAM_BOT_TOKEN", "123456789ABCdef");
+        let err = Config::from_iter(env).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidToken(_)));
+    }
+
+    #[test]
+    fn test_config_invalid_token_non_numeric_id() {
+        let mut env = valid_env();
+        env.insert("TELEGRAM_BOT_TOKEN", "invalid_id:ABCdef");
+        let err = Config::from_iter(env).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidToken(_)));
+    }
+
+    #[test]
+    fn test_config_invalid_token_empty_secret() {
+        let mut env = valid_env();
+        env.insert("TELEGRAM_BOT_TOKEN", "123456789: ");
+        let err = Config::from_iter(env).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidToken(_)));
+    }
+
+    #[test]
+    fn test_config_invalid_admin_chat_id() {
+        let mut env = valid_env();
+        env.insert("ADMIN_CHAT_ID", "not_a_number");
+        let err = Config::from_iter(env).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidAdminChatId(_)));
+    }
+
+    #[test]
+    fn test_config_invalid_database_url() {
+        let mut env = valid_env();
+        env.insert("DATABASE_URL", "postgres://localhost/db");
+        let err = Config::from_iter(env).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidDatabaseUrl(_)));
+    }
+
+    #[test]
+    fn test_config_invalid_max_users_zero() {
+        let mut env = valid_env();
+        env.insert("MAX_USERS_DEFAULT", "0");
+        let err = Config::from_iter(env).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidMaxUsers(_)));
+    }
+
+    #[test]
+    fn test_config_invalid_timezone() {
+        let mut env = valid_env();
+        env.insert("BOT_TZ", "Mars/Phobos");
+        let err = Config::from_iter(env).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidTimezone(_)));
+    }
+
+    #[test]
+    fn test_config_debug_redacts_token() {
+        let env = valid_env();
+        let config = Config::from_iter(env).expect("Configuración válida");
+        let debug_str = format!("{config:?}");
+        assert!(debug_str.contains("bot_token: \"***\""));
+        assert!(!debug_str.contains("ABCdefGhIJKlmNoPQRsTUVwxyZ"));
+    }
+}
