@@ -50,6 +50,9 @@ pub const LOGOUT_NOT_LOGGED_IN: &str = "ℹ️ No tienes ninguna sesión activa 
 pub const UAM_MAINTENANCE: &str =
     "🔥 <b>Roberto's watching UAM Virtual burn.</b> Los servidores de la UAM dieron timeout o están en mantenimiento. Reintentando en segundo plano...";
 
+pub const UAM_RECOVERED: &str =
+    "✅ <b>UAM Virtual recuperado.</b> El servicio vuelve a responder con normalidad.";
+
 // --- COMANDO /sync ---
 pub const SYNC_SCANNING: &str =
     "👁️ <b>Roberto's watching the Moodle servers...</b> buscando cambios.";
@@ -99,6 +102,18 @@ pub fn alert_new_assignment(task: &str, course: &str, due_date: &str) -> String 
         escape_html(task),
         escape_html(course),
         escape_html(due_date)
+    )
+}
+
+pub fn alert_new_material(material: &str, course: &str, section: Option<&str>) -> String {
+    let section_str = section
+        .map(|s| format!(" en la sección <i>{}</i>", escape_html(s)))
+        .unwrap_or_default();
+    format!(
+        "📚 <b>Roberto's watching new materials.</b> Tu profesor acaba de subir <b>[{}]</b> en <b>[{}]</b>{}.",
+        escape_html(material),
+        escape_html(course),
+        section_str
     )
 }
 

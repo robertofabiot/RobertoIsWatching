@@ -17,6 +17,7 @@ fn create_test_config(database_url: String) -> Config {
         max_users_default: 300,
         bot_tz: chrono_tz::America::Managua,
         rust_log: "info".to_string(),
+        scan_interval_min: 30,
     }
 }
 

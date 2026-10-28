@@ -17,6 +17,7 @@ async fn test_pragmas_and_schema_are_applied() {
         max_users_default: 350,
         bot_tz: chrono_tz::America::Managua,
         rust_log: "info".to_string(),
+        scan_interval_min: 30,
     };
 
     let pool = storage::init(&config)

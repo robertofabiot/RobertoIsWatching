@@ -19,6 +19,7 @@ async fn setup_test_db(name: &str) -> (SqlitePool, std::path::PathBuf) {
         max_users_default: 300,
         bot_tz: chrono_tz::America::Managua,
         rust_log: "info".to_string(),
+        scan_interval_min: 30,
     };
 
     let pool = robertos_watching_bot::storage::init(&config)

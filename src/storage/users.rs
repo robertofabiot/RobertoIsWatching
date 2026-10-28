@@ -226,6 +226,23 @@ impl UsersRepository {
         Ok(donors)
     }
 
+    /// Obtiene todos los usuarios activos matriculados en un curso (A-07, PR #6).
+    pub async fn active_users_for_course(
+        pool: &SqlitePool,
+        course_id: i64,
+    ) -> Result<Vec<User>, sqlx::Error> {
+        sqlx::query_as::<_, User>(
+            "SELECT u.chat_id, u.uam_cif, u.uam_user_id, u.fullname, u.wstoken, \
+             u.is_active, u.inactive_reason, u.summary_enabled, u.summary_times, u.summary_days, u.created_at \
+             FROM users u \
+             INNER JOIN user_courses uc ON u.chat_id = uc.chat_id \
+             WHERE uc.course_id = ? AND u.is_active = 1",
+        )
+        .bind(course_id)
+        .fetch_all(pool)
+        .await
+    }
+
     /// Intenta admitir a un usuario de forma estrictamente atómica usando pool.begin_with("BEGIN IMMEDIATE") (A-12).
     /// El wrapper `Transaction` garantiza un rollback automático si la tarea es cancelada,
     /// si no se alcanza el cupo, o si ocurre cualquier error antes del `commit`.
