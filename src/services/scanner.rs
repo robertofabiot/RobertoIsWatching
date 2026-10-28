@@ -3,6 +3,7 @@
 
 use crate::bot::{copy, Bot};
 use crate::config::Config;
+use crate::moodle::breaker::CircuitState;
 use crate::moodle::gate::Priority;
 use crate::moodle::MoodleClient;
 use crate::services::alerts::AlertService;
@@ -16,8 +17,10 @@ use crate::storage::{
 };
 use sqlx::SqlitePool;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use teloxide::prelude::*;
+use teloxide::types::ParseMode;
 use tokio::sync::watch;
 
 pub const DEFAULT_INITIAL_DELAY_SECS: u64 = 5;
@@ -117,6 +120,7 @@ pub struct ScannerWorker {
     pub(crate) interval: Duration,
     pub(crate) initial_delay: Duration,
     pub(crate) cycle_count: AtomicU64,
+    pub(crate) last_breaker_state: Arc<Mutex<CircuitState>>,
 }
 
 impl ScannerWorker {
@@ -130,6 +134,7 @@ impl ScannerWorker {
             interval,
             initial_delay: Duration::from_secs(DEFAULT_INITIAL_DELAY_SECS),
             cycle_count: AtomicU64::new(0),
+            last_breaker_state: Arc::new(Mutex::new(CircuitState::Up)),
         }
     }
 
@@ -140,10 +145,57 @@ impl ScannerWorker {
         self
     }
 
+    /// Monitorea transiciones de estado del CircuitBreaker de Moodle (A-17).
+    /// Envía exactamente una alerta al admin al pasar a Down y otra al recuperarse a Up.
+    pub async fn check_breaker_transition(&self) {
+        let current_state = self.moodle.breaker().state();
+        let (should_alert_down, should_alert_up) = {
+            let mut prev_state = self.last_breaker_state.lock().unwrap();
+            let mut down = false;
+            let mut up = false;
+            if *prev_state != current_state {
+                match (*prev_state, current_state) {
+                    (CircuitState::Up, CircuitState::Down)
+                    | (CircuitState::HalfOpen, CircuitState::Down) => {
+                        down = true;
+                    }
+                    (CircuitState::Down, CircuitState::Up)
+                    | (CircuitState::HalfOpen, CircuitState::Up) => {
+                        up = true;
+                    }
+                    _ => {}
+                }
+                *prev_state = current_state;
+            }
+            (down, up)
+        };
+
+        if should_alert_down {
+            tracing::error!("Moodle CircuitBreaker pasó a DOWN. Notificando al admin (A-17)...");
+            let _ = self
+                .bot
+                .send_message(ChatId(self.config.admin_chat_id), copy::UAM_MAINTENANCE)
+                .parse_mode(ParseMode::Html)
+                .await;
+        } else if should_alert_up {
+            tracing::info!(
+                "Moodle CircuitBreaker se recuperó (UP). Notificando al admin (A-17)..."
+            );
+            let _ = self
+                .bot
+                .send_message(ChatId(self.config.admin_chat_id), copy::UAM_RECOVERED)
+                .parse_mode(ParseMode::Html)
+                .await;
+        }
+    }
+
     /// Ejecuta un único ciclo de escaneo compartido incrementando el contador interno.
     pub async fn run_scan_cycle(&self) -> Result<ScanCycleSummary, anyhow::Error> {
+        self.check_breaker_transition().await;
         let cycle = self.cycle_count.fetch_add(1, Ordering::SeqCst);
-        self.run_scan_cycle_with_count(cycle).await
+        let summary = self.run_scan_cycle_with_count(cycle).await?;
+        self.check_breaker_transition().await;
+        Ok(summary)
     }
 
     /// Ejecuta un único ciclo de escaneo con un índice de ciclo específico (para pruebas de sondeo por niveles).
@@ -1288,5 +1340,92 @@ mod tests {
         // En ciclo 4: tarea 8001 ya está calificada (Cold: 4 % 48 != 0), pero 8002 es Warm (4 % 4 == 0)
         assert_eq!(summary_cycle4.submissions_checked, 1); // Solo la tarea Warm (8002)
         assert_eq!(summary_cycle4.alerts_dispatched, 0); // No hay nueva nota para 8002
+    }
+
+    #[tokio::test]
+    async fn test_scanner_circuit_breaker_transition_alerts_admin() {
+        use crate::bot::create_bot_with_url;
+        use crate::moodle::breaker::CircuitBreaker;
+        use crate::moodle::MoodleClientBuilder;
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let telegram_server = MockServer::start().await;
+
+        // Mock Telegram SendMessage
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {
+                    "message_id": 999,
+                    "date": 1700000000,
+                    "chat": { "id": 1125347763, "type": "private" },
+                    "text": "alerta admin"
+                }
+            })))
+            .mount(&telegram_server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_scanner_breaker_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = crate::storage::init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", telegram_server.uri())).unwrap(),
+        );
+
+        // Breaker con umbral de 2 fallos
+        let breaker = CircuitBreaker::new(2, Duration::from_secs(60));
+        let moodle = MoodleClient::from_builder(
+            MoodleClientBuilder::new()
+                .base_url("https://mock.uam.ni")
+                .breaker(breaker.clone()),
+        );
+
+        let worker = ScannerWorker::new(pool, moodle, bot, config);
+
+        // 1. Estado inicial UP -> No hay alertas
+        worker.check_breaker_transition().await;
+        let reqs_init = telegram_server.received_requests().await.unwrap();
+        assert_eq!(reqs_init.len(), 0);
+
+        // 2. Disparar fallos para abrir el circuit breaker (UP -> DOWN)
+        breaker.record_failure();
+        breaker.record_failure();
+        assert_eq!(breaker.state(), CircuitState::Down);
+
+        worker.check_breaker_transition().await;
+        let reqs_down = telegram_server.received_requests().await.unwrap();
+        assert_eq!(reqs_down.len(), 1);
+        let body_down = String::from_utf8_lossy(&reqs_down[0].body);
+        assert!(body_down.contains("Roberto's watching UAM Virtual burn"));
+
+        // 3. Segundo check en DOWN -> No re-alerta (exactamente 1 alerta)
+        worker.check_breaker_transition().await;
+        let reqs_down2 = telegram_server.received_requests().await.unwrap();
+        assert_eq!(reqs_down2.len(), 1);
+
+        // 4. Breaker se recupera (DOWN -> UP)
+        breaker.record_success();
+        assert_eq!(breaker.state(), CircuitState::Up);
+
+        worker.check_breaker_transition().await;
+        let reqs_up = telegram_server.received_requests().await.unwrap();
+        assert_eq!(reqs_up.len(), 2);
+        let body_up = String::from_utf8_lossy(&reqs_up[1].body);
+        assert!(body_up.contains("UAM Virtual recuperado"));
     }
 }

@@ -50,6 +50,9 @@ pub const LOGOUT_NOT_LOGGED_IN: &str = "ℹ️ No tienes ninguna sesión activa 
 pub const UAM_MAINTENANCE: &str =
     "🔥 <b>Roberto's watching UAM Virtual burn.</b> Los servidores de la UAM dieron timeout o están en mantenimiento. Reintentando en segundo plano...";
 
+pub const UAM_RECOVERED: &str =
+    "✅ <b>UAM Virtual recuperado.</b> El servicio vuelve a responder con normalidad.";
+
 // --- COMANDO /sync ---
 pub const SYNC_SCANNING: &str =
     "👁️ <b>Roberto's watching the Moodle servers...</b> buscando cambios.";
