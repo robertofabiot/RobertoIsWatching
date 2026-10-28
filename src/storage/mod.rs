@@ -1,3 +1,4 @@
+pub mod alerts;
 pub mod assignments;
 pub mod courses;
 pub mod models;
@@ -6,6 +7,7 @@ pub mod pool;
 pub mod submissions;
 pub mod users;
 
+pub use alerts::AlertsRepository;
 pub use assignments::{AssignmentChanges, AssignmentsRepository, UpsertAssignmentResult};
 pub use courses::CoursesRepository;
 pub use models::*;
