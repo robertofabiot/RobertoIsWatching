@@ -12,8 +12,8 @@ use crate::storage::assignments::UpsertAssignmentResult;
 use crate::storage::models::UserSubmission;
 use crate::storage::submissions::{SubmissionData, UpsertSubmissionResult};
 use crate::storage::{
-    AssignmentsRepository, CoursesRepository, ModulesRepository, SubmissionsRepository,
-    UsersRepository,
+    AlertsRepository, AssignmentsRepository, CoursesRepository, ModulesRepository,
+    SubmissionsRepository, UsersRepository,
 };
 use sqlx::SqlitePool;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -602,6 +602,23 @@ impl ScannerWorker {
             CoursesRepository::touch_scanned(&self.pool, course.id).await?;
 
             summary.courses_scanned += 1;
+        }
+
+        // 5. Purga periódica de retención de sent_alerts (> 60 días según A-14)
+        // Se ejecuta en ciclos diarios (cada 48 ciclos de ~30 min) o en el ciclo 0
+        if cycle_count.is_multiple_of(48) {
+            match AlertsRepository::purge_older_than(&self.pool, 60).await {
+                Ok(purged) if purged > 0 => {
+                    tracing::info!(
+                        purged,
+                        "Purga periódica de alertas antiguas (>60d) completada"
+                    );
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    tracing::warn!(error = %err, "Error al purgar alertas antiguas de sent_alerts");
+                }
+            }
         }
 
         tracing::info!(
@@ -1427,5 +1444,61 @@ mod tests {
         assert_eq!(reqs_up.len(), 2);
         let body_up = String::from_utf8_lossy(&reqs_up[1].body);
         assert!(body_up.contains("UAM Virtual recuperado"));
+    }
+
+    #[tokio::test]
+    async fn test_scanner_periodic_retention_purge() {
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_scanner_purge_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = crate::storage::init(&config).await.unwrap();
+        let bot = crate::bot::create_bot(&config.bot_token);
+        let moodle = MoodleClient::new("https://mock.uam.ni");
+
+        // Insertar alerta vieja de 65 días
+        sqlx::query(
+            "INSERT INTO sent_alerts (alert_key, alert_type, chat_id, created_at) \
+             VALUES ('old_alert:1', 'grade', 101, datetime('now', '-65 days'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insertar alerta reciente de 5 días
+        sqlx::query(
+            "INSERT INTO sent_alerts (alert_key, alert_type, chat_id, created_at) \
+             VALUES ('recent_alert:2', 'grade', 101, datetime('now', '-5 days'))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let worker = ScannerWorker::new(pool.clone(), moodle, bot, config);
+
+        // Ejecutar con cycle_count = 48 (dispara la purga diaria)
+        worker.run_scan_cycle_with_count(48).await.unwrap();
+
+        // Alerta vieja de 65 días debe haber sido purgada
+        let old_exists = AlertsRepository::is_claimed(&pool, "old_alert:1")
+            .await
+            .unwrap();
+        assert!(!old_exists, "Alerta vieja de 65 días debe ser purgada");
+
+        // Alerta reciente de 5 días debe preservarse
+        let recent_exists = AlertsRepository::is_claimed(&pool, "recent_alert:2")
+            .await
+            .unwrap();
+        assert!(recent_exists, "Alerta reciente de 5 días debe permanecer");
     }
 }
