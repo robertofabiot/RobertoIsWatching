@@ -296,3 +296,152 @@ async fn test_concurrent_admission_with_quota() {
     let pool = Arc::try_unwrap(pool).expect("Arc cleanup");
     cleanup_test_db(pool, db_path);
 }
+
+#[tokio::test]
+async fn test_active_tokens_for_course_returns_donor_tokens() {
+    let (pool, db_path) = setup_test_db("donors").await;
+
+    // Crear curso
+    CoursesRepository::upsert_course(&pool, 301, "Estructuras de Datos", Some("INF201"))
+        .await
+        .unwrap();
+
+    // 1. Estudiante activo con wstoken válido
+    UsersRepository::upsert_login(
+        &pool,
+        5001,
+        "2301001",
+        1001,
+        "Estudiante Uno",
+        "wstoken_alpha",
+    )
+    .await
+    .unwrap();
+    CoursesRepository::link_user(&pool, 5001, 301)
+        .await
+        .unwrap();
+
+    // 2. Estudiante activo con wstoken válido
+    UsersRepository::upsert_login(
+        &pool,
+        5002,
+        "2301002",
+        1002,
+        "Estudiante Dos",
+        "wstoken_beta",
+    )
+    .await
+    .unwrap();
+    CoursesRepository::link_user(&pool, 5002, 301)
+        .await
+        .unwrap();
+
+    // 3. Estudiante inactivo (desactivado por token inválido)
+    UsersRepository::upsert_login(
+        &pool,
+        5003,
+        "2301003",
+        1003,
+        "Estudiante Tres",
+        "wstoken_gamma",
+    )
+    .await
+    .unwrap();
+    CoursesRepository::link_user(&pool, 5003, 301)
+        .await
+        .unwrap();
+    UsersRepository::mark_inactive(&pool, 5003, "invalid_token")
+        .await
+        .unwrap();
+
+    // 4. Estudiante en otro curso distinto
+    UsersRepository::upsert_login(
+        &pool,
+        5004,
+        "2301004",
+        1004,
+        "Estudiante Cuatro",
+        "wstoken_delta",
+    )
+    .await
+    .unwrap();
+
+    let donors = UsersRepository::active_tokens_for_course(&pool, 301)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        donors.len(),
+        2,
+        "Solo deben retornar los estudiantes activos en el curso 301"
+    );
+    assert!(donors
+        .iter()
+        .any(|d| d.chat_id == 5001 && d.token == "wstoken_alpha"));
+    assert!(donors
+        .iter()
+        .any(|d| d.chat_id == 5002 && d.token == "wstoken_beta"));
+
+    cleanup_test_db(pool, db_path);
+}
+
+#[tokio::test]
+async fn test_cif_transfer_when_quota_is_full() {
+    let (pool, db_path) = setup_test_db("transfer").await;
+
+    // Cupo máximo fijado en 2
+    SettingsRepository::set_max_users(&pool, 2).await.unwrap();
+
+    // Admitir dos usuarios llenando el cupo al 100% (2/2)
+    let adm1 = UsersRepository::try_admit(&pool, 6001, "CIF_A", 10, "User A", "tok_a")
+        .await
+        .unwrap();
+    assert!(matches!(adm1, AdmissionResult::Admitted(_)));
+
+    let adm2 = UsersRepository::try_admit(&pool, 6002, "CIF_B", 20, "User B", "tok_b")
+        .await
+        .unwrap();
+    assert!(matches!(adm2, AdmissionResult::Admitted(_)));
+
+    assert_eq!(UsersRepository::count(&pool).await.unwrap(), 2);
+
+    // Un tercer usuario con CIF diferente es rechazado por cupo lleno
+    let adm3 = UsersRepository::try_admit(&pool, 6003, "CIF_C", 30, "User C", "tok_c")
+        .await
+        .unwrap();
+    assert_eq!(adm3, AdmissionResult::Full);
+
+    // Pero si el usuario A migra a un nuevo chat de Telegram con el mismo CIF ("CIF_A"):
+    // Debe permitirse porque se elimina el registro previo antes del chequeo de cupo (A-12).
+    let migration = UsersRepository::try_admit(
+        &pool,
+        6099, // Nuevo chat_id
+        "CIF_A",
+        10,
+        "User A Migrado",
+        "tok_a_nuevo",
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(migration, AdmissionResult::Admitted(_)),
+        "El traspaso de CIF debe admitirse exitosamente aun con cupo al 100%"
+    );
+
+    // El chat anterior (6001) ya no debe existir
+    assert!(UsersRepository::get(&pool, 6001).await.unwrap().is_none());
+
+    // El nuevo chat (6099) debe existir
+    let new_user = UsersRepository::get(&pool, 6099)
+        .await
+        .unwrap()
+        .expect("Usuario migrado debe existir");
+    assert_eq!(new_user.uam_cif, "CIF_A");
+    assert_eq!(new_user.fullname, "User A Migrado");
+
+    // Total de usuarios debe mantenerse exactamente en 2
+    assert_eq!(UsersRepository::count(&pool).await.unwrap(), 2);
+
+    cleanup_test_db(pool, db_path);
+}

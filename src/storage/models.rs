@@ -80,6 +80,13 @@ pub struct SentAlert {
     pub created_at: Option<NaiveDateTime>,
 }
 
+/// Token donante para rotación y failover en el escaneo compartido (PR #3).
+#[derive(Debug, Clone, PartialEq, Eq, FromRow, Serialize, Deserialize)]
+pub struct DonorToken {
+    pub chat_id: i64,
+    pub token: String,
+}
+
 /// Configuración global persistida en base de datos.
 #[derive(Debug, Clone, PartialEq, Eq, FromRow, Serialize, Deserialize)]
 pub struct SystemSetting {

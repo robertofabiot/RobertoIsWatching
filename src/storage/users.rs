@@ -1,5 +1,5 @@
-use crate::storage::models::User;
-use sqlx::{Executor, SqlitePool};
+use crate::storage::models::{DonorToken, User};
+use sqlx::SqlitePool;
 
 /// Resultado del intento atómico de admisión al sistema (A-12).
 #[derive(Debug, PartialEq, Eq)]
@@ -136,14 +136,14 @@ impl UsersRepository {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Obtiene la lista de tokens válidos de estudiantes activos matriculados en un curso.
-    /// Utilizado para rotación y failover de tokens donantes en el escaneo compartido.
+    /// Obtiene la lista de donantes (chat_id y wstoken) de estudiantes activos matriculados en un curso.
+    /// Utilizado para rotación y failover de tokens donantes en el escaneo compartido (PR #3).
     pub async fn active_tokens_for_course(
         pool: &SqlitePool,
         course_id: i64,
-    ) -> Result<Vec<String>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, (String,)>(
-            "SELECT u.wstoken FROM users u \
+    ) -> Result<Vec<DonorToken>, sqlx::Error> {
+        let donors = sqlx::query_as::<_, DonorToken>(
+            "SELECT u.chat_id, u.wstoken as token FROM users u \
              INNER JOIN user_courses uc ON u.chat_id = uc.chat_id \
              WHERE uc.course_id = ? AND u.is_active = 1 AND u.wstoken != ''",
         )
@@ -151,12 +151,12 @@ impl UsersRepository {
         .fetch_all(pool)
         .await?;
 
-        Ok(rows.into_iter().map(|(token,)| token).collect())
+        Ok(donors)
     }
 
-    /// Intenta admitir a un usuario de forma estrictamente atómica usando BEGIN IMMEDIATE (A-12).
-    /// Previene carreras entre múltiples logins concurrentes y asegura que el re-login de un
-    /// chat_id ya existente no consuma cupo ni sea rechazado.
+    /// Intenta admitir a un usuario de forma estrictamente atómica usando pool.begin_with("BEGIN IMMEDIATE") (A-12).
+    /// El wrapper `Transaction` garantiza un rollback automático si la tarea es cancelada,
+    /// si no se alcanza el cupo, o si ocurre cualquier error antes del `commit`.
     pub async fn try_admit(
         pool: &SqlitePool,
         chat_id: i64,
@@ -165,8 +165,7 @@ impl UsersRepository {
         fullname: &str,
         wstoken: &str,
     ) -> Result<AdmissionResult, sqlx::Error> {
-        let mut conn = pool.acquire().await?;
-        conn.execute("BEGIN IMMEDIATE").await?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
         // 1. Verificar si el usuario ya es miembro existente (por chat_id)
         let existing_user = sqlx::query_as::<_, User>(
@@ -174,31 +173,19 @@ impl UsersRepository {
              FROM users WHERE chat_id = ?"
         )
         .bind(chat_id)
-        .fetch_optional(&mut *conn)
-        .await;
-
-        let existing_user = match existing_user {
-            Ok(u) => u,
-            Err(e) => {
-                let _ = conn.execute("ROLLBACK").await;
-                return Err(e);
-            }
-        };
+        .fetch_optional(&mut *tx)
+        .await?;
 
         if let Some(_user) = existing_user {
             // Re-login: si el CIF estaba en otro chat, liberar el vínculo previo (A-12)
-            if let Err(e) = sqlx::query("DELETE FROM users WHERE uam_cif = ? AND chat_id != ?")
+            sqlx::query("DELETE FROM users WHERE uam_cif = ? AND chat_id != ?")
                 .bind(cif)
                 .bind(chat_id)
-                .execute(&mut *conn)
-                .await
-            {
-                let _ = conn.execute("ROLLBACK").await;
-                return Err(e);
-            }
+                .execute(&mut *tx)
+                .await?;
 
             // Actualizar datos de sesión y reactivar cuenta
-            let update_res = sqlx::query(
+            sqlx::query(
                 "UPDATE users SET \
                  uam_cif = ?, \
                  uam_user_id = ?, \
@@ -213,31 +200,18 @@ impl UsersRepository {
             .bind(fullname)
             .bind(wstoken)
             .bind(chat_id)
-            .execute(&mut *conn)
-            .await;
-
-            if let Err(e) = update_res {
-                let _ = conn.execute("ROLLBACK").await;
-                return Err(e);
-            }
+            .execute(&mut *tx)
+            .await?;
 
             let updated_user = sqlx::query_as::<_, User>(
                 "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at \
                  FROM users WHERE chat_id = ?"
             )
             .bind(chat_id)
-            .fetch_one(&mut *conn)
-            .await;
+            .fetch_one(&mut *tx)
+            .await?;
 
-            let updated_user = match updated_user {
-                Ok(u) => u,
-                Err(e) => {
-                    let _ = conn.execute("ROLLBACK").await;
-                    return Err(e);
-                }
-            };
-
-            conn.execute("COMMIT").await?;
+            tx.commit().await?;
             return Ok(AdmissionResult::AlreadyMember(updated_user));
         }
 
@@ -245,69 +219,48 @@ impl UsersRepository {
         let reg_setting = sqlx::query_as::<_, (String,)>(
             "SELECT value FROM system_settings WHERE key = 'registration_open'",
         )
-        .fetch_optional(&mut *conn)
-        .await;
+        .fetch_optional(&mut *tx)
+        .await?;
 
         let reg_open = match reg_setting {
-            Ok(Some((val,))) => val.trim().eq_ignore_ascii_case("true"),
-            Ok(None) => true,
-            Err(e) => {
-                let _ = conn.execute("ROLLBACK").await;
-                return Err(e);
-            }
+            Some((val,)) => val.trim().eq_ignore_ascii_case("true"),
+            None => true,
         };
 
         if !reg_open {
-            conn.execute("ROLLBACK").await?;
             return Ok(AdmissionResult::Closed);
         }
 
-        // 3. Verificar límite de cupos
+        // 3. Si el mismo CIF existía en otro chat, liberar ese registro antes de chequear cupo (A-12)
+        // Esto garantiza que el traspaso de CIF de un chat a otro no compute como usuario doble
+        sqlx::query("DELETE FROM users WHERE uam_cif = ? AND chat_id != ?")
+            .bind(cif)
+            .bind(chat_id)
+            .execute(&mut *tx)
+            .await?;
+
+        // 4. Verificar límite de cupos disponibles
         let max_setting = sqlx::query_as::<_, (String,)>(
             "SELECT value FROM system_settings WHERE key = 'max_users'",
         )
-        .fetch_optional(&mut *conn)
-        .await;
+        .fetch_optional(&mut *tx)
+        .await?;
 
         let max_users: i64 = match max_setting {
-            Ok(Some((val,))) => val.trim().parse::<i64>().unwrap_or(300),
-            Ok(None) => 300,
-            Err(e) => {
-                let _ = conn.execute("ROLLBACK").await;
-                return Err(e);
-            }
+            Some((val,)) => val.trim().parse::<i64>().unwrap_or(300),
+            None => 300,
         };
 
-        let count_res: Result<(i64,), sqlx::Error> = sqlx::query_as("SELECT COUNT(*) FROM users")
-            .fetch_one(&mut *conn)
-            .await;
-
-        let current_count = match count_res {
-            Ok((count,)) => count,
-            Err(e) => {
-                let _ = conn.execute("ROLLBACK").await;
-                return Err(e);
-            }
-        };
+        let (current_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
+            .fetch_one(&mut *tx)
+            .await?;
 
         if current_count >= max_users {
-            conn.execute("ROLLBACK").await?;
             return Ok(AdmissionResult::Full);
         }
 
-        // 4. Si el mismo CIF existía en otro chat, liberar ese registro (A-12)
-        if let Err(e) = sqlx::query("DELETE FROM users WHERE uam_cif = ? AND chat_id != ?")
-            .bind(cif)
-            .bind(chat_id)
-            .execute(&mut *conn)
-            .await
-        {
-            let _ = conn.execute("ROLLBACK").await;
-            return Err(e);
-        }
-
-        // 5. Insertar nuevo usuario
-        if let Err(e) = sqlx::query(
+        // 5. Insertar nuevo usuario dentro del cupo
+        sqlx::query(
             "INSERT INTO users (chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason) \
              VALUES (?, ?, ?, ?, ?, 1, NULL)",
         )
@@ -316,30 +269,18 @@ impl UsersRepository {
         .bind(uam_user_id)
         .bind(fullname)
         .bind(wstoken)
-        .execute(&mut *conn)
-        .await
-        {
-            let _ = conn.execute("ROLLBACK").await;
-            return Err(e);
-        }
+        .execute(&mut *tx)
+        .await?;
 
         let new_user = sqlx::query_as::<_, User>(
             "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at \
              FROM users WHERE chat_id = ?"
         )
         .bind(chat_id)
-        .fetch_one(&mut *conn)
-        .await;
+        .fetch_one(&mut *tx)
+        .await?;
 
-        let new_user = match new_user {
-            Ok(u) => u,
-            Err(e) => {
-                let _ = conn.execute("ROLLBACK").await;
-                return Err(e);
-            }
-        };
-
-        conn.execute("COMMIT").await?;
+        tx.commit().await?;
         Ok(AdmissionResult::Admitted(new_user))
     }
 }
