@@ -2,6 +2,7 @@ use crate::moodle::breaker::CircuitBreaker;
 use crate::moodle::envelope::decode_envelope;
 use crate::moodle::error::{MoodleError, Result};
 use crate::moodle::gate::{MoodleGate, Priority};
+use crate::moodle::metrics::{RequestCounters, RequestCounts};
 use rand::Rng;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +23,7 @@ pub struct MoodleClientBuilder {
     timeout: Duration,
     gate: Option<MoodleGate>,
     breaker: Option<CircuitBreaker>,
+    counters: Option<Arc<RequestCounters>>,
     max_retries: usize,
 }
 
@@ -34,6 +36,7 @@ impl Default for MoodleClientBuilder {
             timeout: Duration::from_secs(REQUEST_TIMEOUT_SECS),
             gate: None,
             breaker: None,
+            counters: None,
             max_retries: 2,
         }
     }
@@ -79,6 +82,11 @@ impl MoodleClientBuilder {
         self
     }
 
+    pub fn counters(mut self, counters: Arc<RequestCounters>) -> Self {
+        self.counters = Some(counters);
+        self
+    }
+
     pub fn max_retries(mut self, retries: usize) -> Self {
         self.max_retries = retries;
         self
@@ -108,6 +116,7 @@ pub struct MoodleClient {
     base_url: Arc<String>,
     gate: Arc<MoodleGate>,
     breaker: Arc<CircuitBreaker>,
+    counters: Arc<RequestCounters>,
     max_retries: usize,
 }
 
@@ -119,13 +128,24 @@ impl MoodleClient {
 
     pub fn from_builder(builder: MoodleClientBuilder) -> Self {
         let http = builder.build_http();
-        let gate = builder.gate.unwrap_or_default();
+        let counters = builder.counters.unwrap_or_else(|| {
+            if let Some(ref g) = builder.gate {
+                g.counters_arc()
+            } else {
+                Arc::new(RequestCounters::new())
+            }
+        });
+        let gate = builder
+            .gate
+            .unwrap_or_default()
+            .with_counters(Arc::clone(&counters));
         let breaker = builder.breaker.unwrap_or_default();
         Self {
             http,
             base_url: Arc::new(builder.base_url),
             gate: Arc::new(gate),
             breaker: Arc::new(breaker),
+            counters,
             max_retries: builder.max_retries,
         }
     }
@@ -144,6 +164,20 @@ impl MoodleClient {
 
     pub fn breaker(&self) -> &CircuitBreaker {
         &self.breaker
+    }
+
+    pub fn counters(&self) -> &RequestCounters {
+        &self.counters
+    }
+
+    /// Instantánea inmutable de las peticiones HTTP realizadas a Moodle por prioridad.
+    pub fn snapshot(&self) -> RequestCounts {
+        self.counters.snapshot()
+    }
+
+    /// Reinicia los contadores de peticiones atómicamente a cero y retorna el valor previo.
+    pub fn reset(&self) -> RequestCounts {
+        self.counters.reset()
     }
 
     pub fn max_retries(&self) -> usize {
@@ -186,6 +220,7 @@ impl MoodleClient {
             // Adquirir permiso del semáforo de acuerdo a la prioridad
             let permit = self.gate.acquire(priority).await?;
 
+            self.counters.inc(priority);
             let res = self.http.post(&rest_url).form(params).send().await;
 
             // Liberar el permiso del semáforo de inmediato antes de procesar el body o backoff

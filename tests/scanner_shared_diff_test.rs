@@ -194,6 +194,9 @@ async fn test_scanner_e2e_failover_baseline_diff_and_tiers() {
     assert_eq!(summary1.new_materials, 1);
     // CERO alertas: la primera pasada es siembra silenciosa (A-03)
     assert_eq!(summary1.alerts_dispatched, 0);
+    assert_eq!(summary1.tokens_invalidated, 1);
+    assert!(summary1.moodle_requests_background >= 1);
+    assert!(summary1.duration > Duration::ZERO);
 
     // last_scanned del curso ahora está establecido
     let c301 = CoursesRepository::get(&pool, 301).await.unwrap().unwrap();
@@ -207,6 +210,19 @@ async fn test_scanner_e2e_failover_baseline_diff_and_tiers() {
     assert_eq!(summary2.new_assignments, 0);
     assert_eq!(summary2.new_materials, 0);
     assert_eq!(summary2.alerts_dispatched, 0);
+    assert_eq!(summary2.alerts_new_assignment, 0);
+    assert_eq!(summary2.alerts_new_material, 0);
+    assert_eq!(summary2.alerts_grade, 0);
+    assert_eq!(summary2.alerts_deadline_24h, 0);
+    assert_eq!(summary2.tokens_invalidated, 0);
+    assert_eq!(summary2.polled_hot, 0);
+    assert_eq!(summary2.users_polled_hot, 0);
+    assert_eq!(summary2.polled_warm, 0);
+    assert_eq!(summary2.users_polled_warm, 0);
+    assert_eq!(summary2.polled_cold, 0);
+    assert_eq!(summary2.users_polled_cold, 0);
+    assert!(summary2.moodle_requests_background >= 1);
+    assert!(summary2.duration > Duration::ZERO);
 
     // ==========================================
     // FASE 3: Detección de Novedades (RF-03) tras tener línea base previa
@@ -233,6 +249,20 @@ async fn test_scanner_e2e_failover_baseline_diff_and_tiers() {
     // Al correr ciclo 3, se sondea la tarea Hot 502
     let summary3 = worker.run_scan_cycle_with_count(3).await.unwrap();
     assert!(summary3.submissions_checked >= 1);
+    assert_eq!(summary3.polled_hot, 1);
+    assert_eq!(summary3.users_polled_hot, 1);
+    assert_eq!(summary3.polled_warm, 0);
+    assert_eq!(summary3.users_polled_warm, 0);
+    assert_eq!(summary3.polled_cold, 0);
+    assert_eq!(summary3.users_polled_cold, 0);
+    assert_eq!(summary3.alerts_dispatched, 1);
+    assert_eq!(summary3.alerts_new_assignment, 0);
+    assert_eq!(summary3.alerts_new_material, 0);
+    assert_eq!(summary3.alerts_grade, 0);
+    assert_eq!(summary3.alerts_deadline_24h, 1);
+    assert_eq!(summary3.tokens_invalidated, 0);
+    assert!(summary3.moodle_requests_background >= 1);
+    assert!(summary3.duration > Duration::ZERO);
 
     // La entrega de la tarea 502 fue persistida
     let sub502_after = SubmissionsRepository::get(&pool, 2002, 502).await.unwrap();

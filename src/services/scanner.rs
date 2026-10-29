@@ -100,7 +100,7 @@ impl SubmissionTier {
     }
 }
 
-/// Resumen de estadísticas de ejecución de un ciclo de escaneo.
+/// Resumen de estadísticas de ejecución de un ciclo de escaneo (A-05).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScanCycleSummary {
     pub courses_scanned: usize,
@@ -109,6 +109,29 @@ pub struct ScanCycleSummary {
     pub new_materials: usize,
     pub submissions_checked: usize,
     pub alerts_dispatched: usize,
+
+    // Sondeo escalonado por nivel (A-05)
+    pub polled_hot: usize,
+    pub polled_warm: usize,
+    pub polled_cold: usize,
+    pub users_polled_hot: usize,
+    pub users_polled_warm: usize,
+    pub users_polled_cold: usize,
+
+    // Eventos emitidos por tipo
+    pub alerts_new_assignment: usize,
+    pub alerts_new_material: usize,
+    pub alerts_grade: usize,
+    pub alerts_deadline_24h: usize,
+
+    // Tokens invalidados en el ciclo (A-22)
+    pub tokens_invalidated: usize,
+
+    // Llamadas HTTP efectivas a Moodle en segundo plano durante el ciclo
+    pub moodle_requests_background: u64,
+
+    // Duración total de la ejecución del ciclo
+    pub duration: Duration,
 }
 
 /// Worker asíncrono que ejecuta periódicamente el escaneo compartido (RF-02, RF-08).
@@ -212,11 +235,18 @@ impl ScannerWorker {
         &self,
         cycle_count: u64,
     ) -> Result<ScanCycleSummary, anyhow::Error> {
+        let start_time = std::time::Instant::now();
+        let start_counts = self.moodle.snapshot();
+
         tracing::info!(
             cycle = cycle_count,
             "Iniciando ciclo de escaneo compartido de Moodle..."
         );
         let mut summary = ScanCycleSummary::default();
+        let mut hot_users = std::collections::HashSet::new();
+        let mut warm_users = std::collections::HashSet::new();
+        let mut cold_users = std::collections::HashSet::new();
+        let mut invalidated_tokens = std::collections::HashSet::new();
 
         let courses = CoursesRepository::unique_active_courses(&self.pool).await?;
         for course in courses {
@@ -250,6 +280,7 @@ impl ScannerWorker {
 
             // Notificar y desactivar donantes cuyos tokens hayan sido revocados (A-22)
             for invalid_chat_id in &assignments_outcome.invalid {
+                invalidated_tokens.insert(*invalid_chat_id);
                 if let Some(ref sched) = self.scheduler {
                     let _ = sched.cancel_for_user(*invalid_chat_id).await;
                 }
@@ -282,6 +313,7 @@ impl ScannerWorker {
                 {
                     Ok(outcome) => {
                         for invalid_chat_id in &outcome.invalid {
+                            invalidated_tokens.insert(*invalid_chat_id);
                             if let Some(ref sched) = self.scheduler {
                                 let _ = sched.cancel_for_user(*invalid_chat_id).await;
                             }
@@ -460,9 +492,11 @@ impl ScannerWorker {
                                 .unwrap_or(false)
                                 {
                                     summary.alerts_dispatched += 1;
+                                    summary.alerts_new_assignment += 1;
                                 }
                             }
                             Err(err) if err.is_token_error() => {
+                                invalidated_tokens.insert(student.chat_id);
                                 let _ =
                                     session::expire_user(&self.pool, &self.bot, student.chat_id)
                                         .await;
@@ -529,6 +563,7 @@ impl ScannerWorker {
                         .unwrap_or(false)
                         {
                             summary.alerts_dispatched += 1;
+                            summary.alerts_new_material += 1;
                         }
                     }
                 }
@@ -558,6 +593,20 @@ impl ScannerWorker {
                     }
 
                     summary.submissions_checked += 1;
+                    match tier {
+                        SubmissionTier::Hot => {
+                            summary.polled_hot += 1;
+                            hot_users.insert(student.chat_id);
+                        }
+                        SubmissionTier::Warm => {
+                            summary.polled_warm += 1;
+                            warm_users.insert(student.chat_id);
+                        }
+                        SubmissionTier::Cold => {
+                            summary.polled_cold += 1;
+                            cold_users.insert(student.chat_id);
+                        }
+                    }
 
                     match self
                         .moodle
@@ -642,6 +691,7 @@ impl ScannerWorker {
                                     .unwrap_or(false)
                                     {
                                         summary.alerts_dispatched += 1;
+                                        summary.alerts_grade += 1;
                                     }
                                 }
                             }
@@ -679,6 +729,7 @@ impl ScannerWorker {
                                     .unwrap_or(false)
                                     {
                                         summary.alerts_dispatched += 1;
+                                        summary.alerts_deadline_24h += 1;
                                     }
                                 }
 
@@ -717,6 +768,7 @@ impl ScannerWorker {
                             }
                         }
                         Err(err) if err.is_token_error() => {
+                            invalidated_tokens.insert(student.chat_id);
                             if let Some(ref sched) = self.scheduler {
                                 let _ = sched.cancel_for_user(student.chat_id).await;
                             }
@@ -758,10 +810,31 @@ impl ScannerWorker {
             }
         }
 
+        summary.users_polled_hot = hot_users.len();
+        summary.users_polled_warm = warm_users.len();
+        summary.users_polled_cold = cold_users.len();
+        summary.tokens_invalidated = invalidated_tokens.len();
+
+        let end_counts = self.moodle.snapshot();
+        let cycle_counts = end_counts.diff(&start_counts);
+        summary.moodle_requests_background = cycle_counts.background;
+        summary.duration = start_time.elapsed();
+
         tracing::info!(
-            courses = summary.courses_scanned,
-            failed = summary.courses_failed,
-            alerts = summary.alerts_dispatched,
+            cycle = cycle_count,
+            courses_scanned = summary.courses_scanned,
+            courses_failed = summary.courses_failed,
+            users_polled_hot = summary.users_polled_hot,
+            users_polled_warm = summary.users_polled_warm,
+            users_polled_cold = summary.users_polled_cold,
+            alerts_total = summary.alerts_dispatched,
+            alerts_new_assignment = summary.alerts_new_assignment,
+            alerts_new_material = summary.alerts_new_material,
+            alerts_grade = summary.alerts_grade,
+            alerts_deadline_24h = summary.alerts_deadline_24h,
+            tokens_invalidated = summary.tokens_invalidated,
+            moodle_requests_bg = summary.moodle_requests_background,
+            duration_ms = summary.duration.as_millis() as u64,
             "Ciclo de escaneo compartido finalizado."
         );
         Ok(summary)
