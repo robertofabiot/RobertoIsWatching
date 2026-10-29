@@ -250,6 +250,9 @@ impl ScannerWorker {
 
             // Notificar y desactivar donantes cuyos tokens hayan sido revocados (A-22)
             for invalid_chat_id in &assignments_outcome.invalid {
+                if let Some(ref sched) = self.scheduler {
+                    let _ = sched.cancel_for_user(*invalid_chat_id).await;
+                }
                 if let Err(e) = session::expire_user(&self.pool, &self.bot, *invalid_chat_id).await
                 {
                     tracing::error!(
@@ -279,6 +282,9 @@ impl ScannerWorker {
                 {
                     Ok(outcome) => {
                         for invalid_chat_id in &outcome.invalid {
+                            if let Some(ref sched) = self.scheduler {
+                                let _ = sched.cancel_for_user(*invalid_chat_id).await;
+                            }
                             if let Err(e) =
                                 session::expire_user(&self.pool, &self.bot, *invalid_chat_id).await
                             {
@@ -711,6 +717,9 @@ impl ScannerWorker {
                             }
                         }
                         Err(err) if err.is_token_error() => {
+                            if let Some(ref sched) = self.scheduler {
+                                let _ = sched.cancel_for_user(student.chat_id).await;
+                            }
                             let _ =
                                 session::expire_user(&self.pool, &self.bot, student.chat_id).await;
                         }

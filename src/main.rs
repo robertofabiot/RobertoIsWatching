@@ -44,7 +44,15 @@ async fn main() {
     let moodle = MoodleClient::new(moodle::DEFAULT_BASE_URL);
     let config_arc = Arc::new(config);
 
-    let mut dispatcher = bot::dispatcher::create_dispatcher(bot, pool, moodle, config_arc);
+    let (scheduler, _scheduler_worker) =
+        robertos_watching_bot::scheduler::deadlines::DeadlineScheduler::new(
+            pool.clone(),
+            bot.clone(),
+            config_arc.clone(),
+        );
+
+    let mut dispatcher =
+        bot::dispatcher::create_dispatcher(bot, pool, moodle, config_arc, Some(scheduler));
 
     tracing::info!(
         "Dispatcher de Telegram iniciado. Escuchando actualizaciones vía Long Polling..."

@@ -958,4 +958,72 @@ mod tests {
             "Alerta 3002 debe estar en sent_alerts tras boot lookahead"
         );
     }
+
+    #[tokio::test]
+    async fn test_drop_jobs_on_cancel_for_user() {
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url: "sqlite::memory:".to_string(),
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = crate::storage::init(&config).await.unwrap();
+        let bot = crate::bot::create_bot(&config.bot_token);
+        let (_scheduler, mut worker) = DeadlineScheduler::new(pool, bot, config);
+
+        // Agendar 2 jobs para alumno 6001
+        worker.push_job(DeadlineJob {
+            chat_id: 6001,
+            assignment_id: 11,
+            effective_due: 10000,
+            version: 0,
+        });
+        worker.push_job(DeadlineJob {
+            chat_id: 6001,
+            assignment_id: 12,
+            effective_due: 15000,
+            version: 0,
+        });
+
+        // Agendar 1 job para alumno 6002
+        worker.push_job(DeadlineJob {
+            chat_id: 6002,
+            assignment_id: 13,
+            effective_due: 12000,
+            version: 0,
+        });
+
+        assert_eq!(worker.versions.len(), 3);
+
+        // Cancelar todos los trabajos del alumno 6001 (logout o desactivación)
+        worker.versions.retain(|&(c_id, _), _| c_id != 6001);
+
+        assert_eq!(worker.versions.len(), 1);
+        assert!(!worker.versions.contains_key(&(6001, 11)));
+        assert!(!worker.versions.contains_key(&(6001, 12)));
+        assert_eq!(worker.versions.get(&(6002, 13)), Some(&1));
+
+        // Al sacar los elementos del heap:
+        // Los de 6001 deben evaluarse como obsoletos/cancelados
+        while let Some(top) = worker.heap.pop() {
+            let is_current = worker
+                .versions
+                .get(&(top.job.chat_id, top.job.assignment_id))
+                .map(|&v| v == top.job.version)
+                .unwrap_or(false);
+
+            if top.job.chat_id == 6001 {
+                assert!(
+                    !is_current,
+                    "Los jobs de 6001 deben considerarse cancelados"
+                );
+            } else if top.job.chat_id == 6002 {
+                assert!(is_current, "Los jobs de 6002 deben mantenerse vigentes");
+            }
+        }
+    }
 }
