@@ -23,6 +23,7 @@ pub struct App {
     pub dispatcher: BotDispatcher,
     pub scanner: ScannerWorker,
     pub deadline_worker: DeadlineWorker,
+    pub scheduler: DeadlineScheduler,
 }
 
 /// Estructura contenedora de los handles de los workers en ejecución y el canal de apagado.
@@ -91,12 +92,13 @@ pub fn build(pool: SqlitePool, bot: Bot, moodle: MoodleClient, config: Arc<Confi
     )
     .with_scheduler(scheduler.clone());
 
-    let dispatcher = create_dispatcher(bot, pool, moodle, config, Some(scheduler));
+    let dispatcher = create_dispatcher(bot, pool, moodle, config, Some(scheduler.clone()));
 
     App {
         dispatcher,
         scanner,
         deadline_worker,
+        scheduler,
     }
 }
 
