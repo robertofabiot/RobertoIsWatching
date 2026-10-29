@@ -4,6 +4,7 @@ use robertos_watching_bot::config::Config;
 use robertos_watching_bot::moodle::{self, MoodleClient};
 use robertos_watching_bot::{storage, telemetry};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
@@ -47,13 +48,20 @@ async fn main() {
 
     let app = app::build(pool, bot, moodle, config_arc);
     let mut dispatcher = app.dispatcher;
-    let _running = app::spawn_workers(app.scanner, app.deadline_worker);
-    // TODO A3: coordinar apagado ordenado de workers y dispatcher
+    let running = app::spawn_workers(app.scanner, app.deadline_worker);
+
+    app::setup_sigterm_handler(&dispatcher);
 
     tracing::info!(
         "Dispatcher de Telegram iniciado. Escuchando actualizaciones vía Long Polling..."
     );
     dispatcher.dispatch().await;
 
-    tracing::info!("Apagado limpio completado. Hasta pronto.");
+    let clean = running.shutdown_and_wait(Duration::from_secs(10)).await;
+
+    if clean {
+        tracing::info!("Apagado limpio completado. Hasta pronto.");
+    } else {
+        tracing::warn!("Apagado completado con advertencias o errores en los workers.");
+    }
 }

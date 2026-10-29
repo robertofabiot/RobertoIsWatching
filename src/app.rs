@@ -1,6 +1,6 @@
-//! Ensamblado y configuración de componentes centrales de la aplicación (PR-A, Prompt A1 & A2).
-//! Centraliza la construcción del dispatcher del bot, el scanner y el worker de plazos
-//! para facilitar la inicialización y el lanzamiento de workers en segundo plano.
+//! Ensamblado y configuración de componentes centrales de la aplicación (PR-A).
+//! Centraliza la construcción del dispatcher del bot, el scanner y el worker de plazos,
+//! así como el lanzamiento y apagado ordenado de workers en segundo plano.
 
 use crate::bot::dispatcher::create_dispatcher;
 use crate::bot::Bot;
@@ -10,6 +10,7 @@ use crate::scheduler::deadlines::{DeadlineScheduler, DeadlineWorker};
 use crate::services::scanner::ScannerWorker;
 use sqlx::SqlitePool;
 use std::sync::Arc;
+use std::time::Duration;
 use teloxide::dispatching::Dispatcher;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -29,6 +30,52 @@ pub struct Running {
     pub shutdown_tx: watch::Sender<bool>,
     pub scanner_handle: JoinHandle<()>,
     pub deadline_handle: JoinHandle<()>,
+}
+
+impl Running {
+    /// Envía la señal de apagado a los workers y espera a que ambos JoinHandles terminen
+    /// con un tiempo límite independiente para cada uno.
+    /// Retorna `true` si ambos workers cerraron limpiamente sin timeout ni errores de pánico.
+    pub async fn shutdown_and_wait(self, timeout_per_worker: Duration) -> bool {
+        let _ = self.shutdown_tx.send(true);
+        let mut clean = true;
+
+        match tokio::time::timeout(timeout_per_worker, self.scanner_handle).await {
+            Ok(Ok(())) => {
+                tracing::info!("ScannerWorker finalizado exitosamente.");
+            }
+            Ok(Err(panic_err)) => {
+                clean = false;
+                tracing::error!(error = %panic_err, "ScannerWorker terminó con error o pánico");
+            }
+            Err(_) => {
+                clean = false;
+                tracing::warn!(
+                    timeout_secs = timeout_per_worker.as_secs(),
+                    "Timeout esperando que ScannerWorker se detenga"
+                );
+            }
+        }
+
+        match tokio::time::timeout(timeout_per_worker, self.deadline_handle).await {
+            Ok(Ok(())) => {
+                tracing::info!("DeadlineWorker finalizado exitosamente.");
+            }
+            Ok(Err(panic_err)) => {
+                clean = false;
+                tracing::error!(error = %panic_err, "DeadlineWorker terminó con error o pánico");
+            }
+            Err(_) => {
+                clean = false;
+                tracing::warn!(
+                    timeout_secs = timeout_per_worker.as_secs(),
+                    "Timeout esperando que DeadlineWorker se detenga"
+                );
+            }
+        }
+
+        clean
+    }
 }
 
 /// Ensambla los componentes de la aplicación sin lanzar ninguna tarea en segundo plano.
@@ -70,6 +117,29 @@ pub fn spawn_workers(scanner: ScannerWorker, deadline_worker: DeadlineWorker) ->
     }
 }
 
+/// Configura una tarea en segundo plano que escucha la señal SIGTERM (UNIX)
+/// y solicita el apagado ordenado del dispatcher de Telegram mediante su ShutdownToken.
+#[allow(unused_variables)]
+pub fn setup_sigterm_handler(dispatcher: &BotDispatcher) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let shutdown_token = dispatcher.shutdown_token();
+        tokio::spawn(async move {
+            match signal(SignalKind::terminate()) {
+                Ok(mut sigterm) => {
+                    sigterm.recv().await;
+                    tracing::info!("Señal SIGTERM recibida. Solicitando apagado del dispatcher...");
+                    let _ = shutdown_token.shutdown();
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "Error al registrar el manejador de señal SIGTERM");
+                }
+            }
+        });
+    }
+}
+
 impl App {
     /// Lanza los workers de fondo de la aplicación y retorna el dispatcher junto con los handles de ejecución.
     pub fn spawn_workers(self) -> (BotDispatcher, Running) {
@@ -81,7 +151,6 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[tokio::test]
     async fn test_app_build_assembles_components() {
@@ -123,16 +192,138 @@ mod tests {
         let app = build(pool, bot, moodle, config);
         let running = spawn_workers(app.scanner, app.deadline_worker);
 
-        // Enviar señal de apagado a los workers
-        running.shutdown_tx.send(true).unwrap();
+        // Apagar y esperar a que ambos workers finalicen de forma limpia
+        let clean = running.shutdown_and_wait(Duration::from_millis(500)).await;
+        assert!(clean, "El apagado de workers debió ser limpio");
+    }
 
-        // Asegurar que ambos workers finalicen de forma limpia dentro del timeout
-        let scanner_res =
-            tokio::time::timeout(Duration::from_millis(500), running.scanner_handle).await;
-        assert!(scanner_res.is_ok(), "scanner_handle no terminó a tiempo");
+    #[tokio::test]
+    async fn test_setup_sigterm_handler_does_not_panic() {
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url: "sqlite::memory:".to_string(),
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
 
-        let deadline_res =
-            tokio::time::timeout(Duration::from_millis(500), running.deadline_handle).await;
-        assert!(deadline_res.is_ok(), "deadline_handle no terminó a tiempo");
+        let pool = crate::storage::init(&config).await.unwrap();
+        let bot = crate::bot::create_bot(&config.bot_token);
+        let moodle = MoodleClient::new("http://127.0.0.1:8080");
+
+        let app = build(pool, bot, moodle, config);
+        setup_sigterm_handler(&app.dispatcher);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_and_wait_timeout() {
+        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
+        // Simular worker que tarda más del timeout
+        let scanner_handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        });
+        let deadline_handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        });
+
+        let running = Running {
+            shutdown_tx,
+            scanner_handle,
+            deadline_handle,
+        };
+
+        let clean = running.shutdown_and_wait(Duration::from_millis(50)).await;
+        assert!(!clean, "El apagado con timeout debió retornar false");
+    }
+
+    #[tokio::test]
+    async fn test_dispatcher_and_workers_graceful_shutdown() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let telegram_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*getme"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {
+                    "id": 123456789,
+                    "is_bot": true,
+                    "first_name": "TestBot",
+                    "username": "test_bot",
+                    "can_join_groups": true,
+                    "can_read_all_group_messages": false,
+                    "supports_inline_queries": false,
+                    "has_main_web_app": false
+                }
+            })))
+            .mount(&telegram_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*getwebhookinfo"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {
+                    "url": "",
+                    "has_custom_certificate": false,
+                    "pending_update_count": 0
+                }
+            })))
+            .mount(&telegram_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*deletewebhook"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": true
+            })))
+            .mount(&telegram_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*getupdates"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": []
+            })))
+            .mount(&telegram_server)
+            .await;
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url: "sqlite::memory:".to_string(),
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = crate::storage::init(&config).await.unwrap();
+        let bot = crate::bot::create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", telegram_server.uri())).unwrap(),
+        );
+        let moodle = MoodleClient::new("http://127.0.0.1:8080");
+
+        let app = build(pool, bot, moodle, config);
+        let mut dispatcher = app.dispatcher;
+        let running = spawn_workers(app.scanner, app.deadline_worker);
+
+        let shutdown_token = dispatcher.shutdown_token();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let _ = shutdown_token.shutdown();
+        });
+
+        dispatcher.dispatch().await;
+
+        let clean = running.shutdown_and_wait(Duration::from_secs(1)).await;
+        assert!(clean, "El apagado coordinado debió ser limpio");
     }
 }
