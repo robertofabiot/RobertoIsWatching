@@ -7,6 +7,7 @@ use crate::services::alerts::AlertService;
 use crate::storage::assignments::AssignmentsRepository;
 use crate::storage::submissions::SubmissionsRepository;
 use crate::storage::users::UsersRepository;
+use crate::storage::AlertsRepository;
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 use std::cmp::Ordering;
@@ -131,6 +132,23 @@ pub struct DeadlineWorker {
     versions: HashMap<(i64, i64), u64>,
 }
 
+/// Resumen de operaciones realizadas durante la reconstrucción inicial del min-heap (boot lookahead).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BootLookaheadSummary {
+    pub jobs_scheduled: usize,
+    pub alerts_dispatched: usize,
+    pub expired_discarded: usize,
+    pub already_claimed_skipped: usize,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct BootLookaheadRow {
+    chat_id: i64,
+    assignment_id: i64,
+    assignment_name: String,
+    effective_due: i64,
+}
+
 impl DeadlineWorker {
     pub fn new(
         pool: SqlitePool,
@@ -173,9 +191,100 @@ impl DeadlineWorker {
         self.heap.push(ScheduledDeadline { fire_at, job });
     }
 
+    /// Reconstruye el min-heap desde SQLite al arrancar el bot (boot lookahead, Plan Maestro §5.1.3).
+    /// Las tareas dentro de la ventana de 2h no enviadas se disparan; las tareas futuras se agendan en el heap;
+    /// las tareas vencidas se descartan silenciosamente.
+    pub async fn boot_lookahead(&mut self) -> Result<BootLookaheadSummary, anyhow::Error> {
+        tracing::info!("Iniciando reconstrucción del min-heap desde SQLite (boot lookahead)...");
+        let mut summary = BootLookaheadSummary::default();
+
+        let rows = sqlx::query_as::<_, BootLookaheadRow>(
+            "SELECT \
+                uc.chat_id, \
+                a.id as assignment_id, \
+                a.name as assignment_name, \
+                COALESCE(us.due_override, a.duedate) as effective_due \
+             FROM assignments a \
+             INNER JOIN user_courses uc ON a.course_id = uc.course_id \
+             INNER JOIN users u ON uc.chat_id = u.chat_id \
+             LEFT JOIN user_submissions us ON a.id = us.assignment_id AND us.chat_id = uc.chat_id \
+             WHERE u.is_active = 1 \
+               AND COALESCE(us.due_override, a.duedate) IS NOT NULL \
+               AND COALESCE(us.due_override, a.duedate) > 0 \
+               AND (us.status IS NULL OR us.status != 'submitted') \
+               AND (us.graded IS NULL OR us.graded = 0) \
+               AND (us.grade IS NULL)",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let now_epoch = Utc::now().timestamp();
+
+        for row in rows {
+            if row.effective_due <= now_epoch {
+                // Tarea vencida: se descarta (§5.1.3)
+                summary.expired_discarded += 1;
+                continue;
+            }
+
+            let remaining = row.effective_due - now_epoch;
+
+            if remaining <= 2 * 3600 {
+                // Dentro de la ventana crítica de 2h
+                let alert_key = format!("deadline:{}:{}:2h", row.chat_id, row.assignment_id);
+                let already_claimed = AlertsRepository::is_claimed(&self.pool, &alert_key).await?;
+
+                if already_claimed {
+                    summary.already_claimed_skipped += 1;
+                } else {
+                    let due_time_str =
+                        copy::format_epoch_time_only(row.effective_due, self.config.bot_tz);
+                    let msg = copy::alert_deadline_2h(&row.assignment_name, &due_time_str);
+
+                    let dispatched = AlertService::dispatch(
+                        &self.pool,
+                        &self.bot,
+                        &alert_key,
+                        "deadline_2h",
+                        row.chat_id,
+                        &msg,
+                    )
+                    .await?;
+
+                    if dispatched {
+                        summary.alerts_dispatched += 1;
+                    }
+                }
+            } else {
+                // Tarea futura fuera de la ventana de 2h: agendar en min-heap
+                self.push_job(DeadlineJob {
+                    chat_id: row.chat_id,
+                    assignment_id: row.assignment_id,
+                    effective_due: row.effective_due,
+                    version: 0,
+                });
+                summary.jobs_scheduled += 1;
+            }
+        }
+
+        tracing::info!(
+            jobs_scheduled = summary.jobs_scheduled,
+            alerts_dispatched = summary.alerts_dispatched,
+            expired_discarded = summary.expired_discarded,
+            already_claimed = summary.already_claimed_skipped,
+            "Boot lookahead completado exitosamente"
+        );
+
+        Ok(summary)
+    }
+
     /// Bucle principal de ejecución del planificador (A-16).
     pub async fn run_loop(mut self, mut shutdown_rx: watch::Receiver<bool>) {
         tracing::info!("DeadlineWorker iniciado sobre min-heap.");
+
+        if let Err(e) = self.boot_lookahead().await {
+            tracing::error!(error = %e, "Error al ejecutar boot lookahead al iniciar DeadlineWorker");
+        }
 
         loop {
             let sleep_duration = match self.heap.peek() {
@@ -674,6 +783,179 @@ mod tests {
         assert!(
             !claimed_d,
             "Alerta 2h debió omitirse porque el plazo cambió en la base de datos"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_boot_lookahead_rebuilds_heap_and_dispatches_window_alerts() {
+        use crate::bot::create_bot_with_url;
+        use crate::storage::submissions::SubmissionData;
+        use crate::storage::CoursesRepository;
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let telegram_server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {
+                    "message_id": 888,
+                    "date": 1700000000,
+                    "chat": { "id": 5001, "type": "private" },
+                    "text": "alerta deadline 2h lookahead"
+                }
+            })))
+            .mount(&telegram_server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_boot_lookahead_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = crate::storage::init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", telegram_server.uri())).unwrap(),
+        );
+
+        // Curso 300
+        CoursesRepository::upsert_course(&pool, 300, "Sistemas Operativos", Some("SO"))
+            .await
+            .unwrap();
+
+        // Alumno 5001
+        UsersRepository::upsert_login(&pool, 5001, "24015001", 501, "Estudiante SO", "tok_so")
+            .await
+            .unwrap();
+        CoursesRepository::link_user(&pool, 5001, 300)
+            .await
+            .unwrap();
+
+        let now = Utc::now().timestamp();
+
+        // 1. Tarea 3001: vence en 5 horas -> FUERA de la ventana 2h -> debe agendarse en el heap
+        AssignmentsRepository::upsert(
+            &pool,
+            3001,
+            Some(30010),
+            300,
+            "Proyecto SO (5h)",
+            Some(now + 5 * 3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // 2. Tarea 3002: vence en 1 hora -> DENTRO de la ventana 2h, no enviada -> debe dispararse
+        AssignmentsRepository::upsert(
+            &pool,
+            3002,
+            Some(30020),
+            300,
+            "Lab 1 SO (1h)",
+            Some(now + 3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // 3. Tarea 3003: vence en 1 hora -> DENTRO de la ventana 2h, pero YA ENVIADA previamente
+        AssignmentsRepository::upsert(
+            &pool,
+            3003,
+            Some(30030),
+            300,
+            "Lab 2 SO (1h enviado)",
+            Some(now + 3600),
+            None,
+        )
+        .await
+        .unwrap();
+        AlertsRepository::try_claim(&pool, "deadline:5001:3003:2h", "deadline_2h", Some(5001))
+            .await
+            .unwrap();
+
+        // 4. Tarea 3004: vencida hace 2 horas -> DEBE DESCARTARSE (§5.1.3)
+        AssignmentsRepository::upsert(
+            &pool,
+            3004,
+            Some(30040),
+            300,
+            "Lab Vencido (-2h)",
+            Some(now - 7200),
+            None,
+        )
+        .await
+        .unwrap();
+
+        // 5. Tarea 3005: vence en 5 horas pero ya entregada
+        AssignmentsRepository::upsert(
+            &pool,
+            3005,
+            Some(30050),
+            300,
+            "Lab Entregado (5h)",
+            Some(now + 5 * 3600),
+            None,
+        )
+        .await
+        .unwrap();
+        SubmissionsRepository::upsert(
+            &pool,
+            SubmissionData {
+                chat_id: 5001,
+                assignment_id: 3005,
+                status: Some("submitted"),
+                graded: false,
+                grade: None,
+                feedback: None,
+                due_override: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let (_scheduler, mut worker) = DeadlineScheduler::new(pool.clone(), bot, config);
+
+        // Ejecutar boot lookahead
+        let summary = worker.boot_lookahead().await.unwrap();
+
+        assert_eq!(summary.jobs_scheduled, 1, "Debe agendar solo 3001 en heap");
+        assert_eq!(
+            summary.alerts_dispatched, 1,
+            "Debe despachar 3002 dentro de 2h"
+        );
+        assert_eq!(
+            summary.already_claimed_skipped, 1,
+            "Debe omitir 3003 ya enviada"
+        );
+        assert_eq!(
+            summary.expired_discarded, 1,
+            "Debe descartar 3004 ya vencida"
+        );
+
+        // El heap debe contener exactamente 1 job (3001)
+        assert_eq!(worker.len(), 1);
+
+        // La alerta de 3002 debe estar registrada en sent_alerts
+        let claimed_3002 = AlertsRepository::is_claimed(&pool, "deadline:5001:3002:2h")
+            .await
+            .unwrap();
+        assert!(
+            claimed_3002,
+            "Alerta 3002 debe estar en sent_alerts tras boot lookahead"
         );
     }
 }
