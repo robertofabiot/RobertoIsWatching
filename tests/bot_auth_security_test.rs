@@ -287,6 +287,7 @@ async fn test_logout_purges_user_cascades_and_alerts() {
         bot.clone(),
         msg.clone(),
         pool.clone(),
+        None,
     )
     .await;
     assert!(res.is_ok());
@@ -309,7 +310,8 @@ async fn test_logout_purges_user_cascades_and_alerts() {
 
     // 3. Ejecutar /logout cuando no está logueado no debe fallar
     let res_again =
-        robertos_watching_bot::bot::handlers::auth::handle_logout(bot, msg, pool.clone()).await;
+        robertos_watching_bot::bot::handlers::auth::handle_logout(bot, msg, pool.clone(), None)
+            .await;
     assert!(res_again.is_ok());
 
     let _ = std::fs::remove_file(&db_path);

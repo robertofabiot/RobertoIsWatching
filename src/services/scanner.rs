@@ -6,6 +6,7 @@ use crate::config::Config;
 use crate::moodle::breaker::CircuitState;
 use crate::moodle::gate::Priority;
 use crate::moodle::MoodleClient;
+use crate::scheduler::deadlines::{DeadlineJob, DeadlineScheduler};
 use crate::services::alerts::AlertService;
 use crate::services::session;
 use crate::storage::assignments::UpsertAssignmentResult;
@@ -121,6 +122,7 @@ pub struct ScannerWorker {
     pub(crate) initial_delay: Duration,
     pub(crate) cycle_count: AtomicU64,
     pub(crate) last_breaker_state: Arc<Mutex<CircuitState>>,
+    pub(crate) scheduler: Option<DeadlineScheduler>,
 }
 
 impl ScannerWorker {
@@ -135,7 +137,14 @@ impl ScannerWorker {
             initial_delay: Duration::from_secs(DEFAULT_INITIAL_DELAY_SECS),
             cycle_count: AtomicU64::new(0),
             last_breaker_state: Arc::new(Mutex::new(CircuitState::Up)),
+            scheduler: None,
         }
+    }
+
+    /// Asocia un planificador de plazos (`DeadlineScheduler`) para agendar alertas de 2h.
+    pub fn with_scheduler(mut self, scheduler: DeadlineScheduler) -> Self {
+        self.scheduler = Some(scheduler);
+        self
     }
 
     /// Permite personalizar el intervalo y el retardo inicial (esencial para tests).
@@ -241,6 +250,9 @@ impl ScannerWorker {
 
             // Notificar y desactivar donantes cuyos tokens hayan sido revocados (A-22)
             for invalid_chat_id in &assignments_outcome.invalid {
+                if let Some(ref sched) = self.scheduler {
+                    let _ = sched.cancel_for_user(*invalid_chat_id).await;
+                }
                 if let Err(e) = session::expire_user(&self.pool, &self.bot, *invalid_chat_id).await
                 {
                     tracing::error!(
@@ -270,6 +282,9 @@ impl ScannerWorker {
                 {
                     Ok(outcome) => {
                         for invalid_chat_id in &outcome.invalid {
+                            if let Some(ref sched) = self.scheduler {
+                                let _ = sched.cancel_for_user(*invalid_chat_id).await;
+                            }
                             if let Err(e) =
                                 session::expire_user(&self.pool, &self.bot, *invalid_chat_id).await
                             {
@@ -328,7 +343,56 @@ impl ScannerWorker {
                             newly_inserted_assignments.push(inserted_assign);
                         }
                     }
-                    UpsertAssignmentResult::Updated { .. } => {}
+                    UpsertAssignmentResult::Updated {
+                        assignment,
+                        changes,
+                    } => {
+                        // Si cambió la fecha de vencimiento general, reprogramar jobs de alerta 2h
+                        if changes.duedate_changed {
+                            if let Some(ref sched) = self.scheduler {
+                                if let Ok(enrolled) =
+                                    UsersRepository::active_users_for_course(&self.pool, course.id)
+                                        .await
+                                {
+                                    let now_ts = chrono::Utc::now().timestamp();
+                                    for st in enrolled {
+                                        if let Ok(sub_opt) = SubmissionsRepository::get(
+                                            &self.pool,
+                                            st.chat_id,
+                                            assignment.id,
+                                        )
+                                        .await
+                                        {
+                                            let is_done = sub_opt
+                                                .as_ref()
+                                                .map(|s| {
+                                                    s.status.as_deref() == Some("submitted")
+                                                        || s.graded
+                                                        || s.grade.is_some()
+                                                })
+                                                .unwrap_or(false);
+                                            if !is_done {
+                                                let eff_due = sub_opt
+                                                    .as_ref()
+                                                    .and_then(|s| s.due_override)
+                                                    .or(assignment.duedate)
+                                                    .unwrap_or(0);
+                                                if eff_due > now_ts {
+                                                    let _ = sched
+                                                        .reschedule(
+                                                            st.chat_id,
+                                                            assignment.id,
+                                                            eff_due,
+                                                        )
+                                                        .await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     UpsertAssignmentResult::Unchanged(_) => {}
                 }
             }
@@ -581,8 +645,81 @@ impl ScannerWorker {
                                     }
                                 }
                             }
+
+                            // Alerta de vencimiento a 24 horas (Escalón 1 - RF-04)
+                            // En cada ciclo: restante <= 24 h, no entregada y now < due => deadline:{chat}:{assign}:24h.
+                            // Si restante <= 2 h, se omite (se reserva para el escalón crítico de 2 h).
+                            let effective_due =
+                                sub_status.due_override.or(assign.duedate).unwrap_or(0);
+
+                            if effective_due > 0 && now_epoch < effective_due {
+                                let remaining = effective_due - now_epoch;
+                                let is_submitted =
+                                    sub_status.status.as_deref() == Some("submitted");
+                                let is_graded = sub_status.graded || sub_status.grade.is_some();
+
+                                if !is_submitted
+                                    && !is_graded
+                                    && remaining <= 24 * 3600
+                                    && remaining > 2 * 3600
+                                {
+                                    let alert_key =
+                                        format!("deadline:{}:{}:24h", student.chat_id, assign.id);
+                                    let msg = copy::alert_deadline_24h(&assign.name);
+
+                                    if AlertService::dispatch(
+                                        &self.pool,
+                                        &self.bot,
+                                        &alert_key,
+                                        "deadline_24h",
+                                        student.chat_id,
+                                        &msg,
+                                    )
+                                    .await
+                                    .unwrap_or(false)
+                                    {
+                                        summary.alerts_dispatched += 1;
+                                    }
+                                }
+
+                                // Programar o reprogramar alerta crítica de 2h en el planificador min-heap (RF-04, A-16)
+                                if !is_submitted && !is_graded {
+                                    if let Some(ref sched) = self.scheduler {
+                                        // Si hubo cambio explícito en due_override, reprogramar
+                                        let is_override_change = matches!(
+                                            &sub_res,
+                                            UpsertSubmissionResult::Updated { changes, .. }
+                                                if changes.due_override_changed
+                                        );
+
+                                        if is_override_change {
+                                            let _ = sched
+                                                .reschedule(
+                                                    student.chat_id,
+                                                    assign.id,
+                                                    effective_due,
+                                                )
+                                                .await;
+                                        } else {
+                                            let _ = sched
+                                                .schedule(DeadlineJob {
+                                                    chat_id: student.chat_id,
+                                                    assignment_id: assign.id,
+                                                    effective_due,
+                                                    version: 0,
+                                                })
+                                                .await;
+                                        }
+                                    }
+                                } else if let Some(ref sched) = self.scheduler {
+                                    let _ = sched.cancel_job(student.chat_id, assign.id).await;
+                                }
+                            }
                         }
                         Err(err) if err.is_token_error() => {
+                            if let Some(ref sched) = self.scheduler {
+                                let _ = sched.cancel_for_user(student.chat_id).await;
+                            }
                             let _ =
                                 session::expire_user(&self.pool, &self.bot, student.chat_id).await;
                         }
@@ -1500,5 +1637,203 @@ mod tests {
             .await
             .unwrap();
         assert!(recent_exists, "Alerta reciente de 5 días debe permanecer");
+    }
+
+    #[tokio::test]
+    async fn test_scanner_deadline_24h_tier() {
+        use crate::bot::create_bot_with_url;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let moodle_server = MockServer::start().await;
+        let telegram_server = MockServer::start().await;
+
+        // Mock Telegram SendMessage
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {
+                    "message_id": 201,
+                    "date": 1700000000,
+                    "chat": { "id": 888, "type": "private" },
+                    "text": "alerta deadline"
+                }
+            })))
+            .mount(&telegram_server)
+            .await;
+
+        // Mock Moodle mod_assign_get_assignments sin tareas nuevas
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains(
+                "wsfunction=mod_assign_get_assignments",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "courses": [{
+                    "id": 700,
+                    "assignments": []
+                }]
+            })))
+            .mount(&moodle_server)
+            .await;
+
+        // Mock core_course_get_contents vacío
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains(
+                "wsfunction=core_course_get_contents",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&moodle_server)
+            .await;
+
+        // Tarea 7001: vence en 10h (<= 24h y > 2h, no entregada) -> DEBE disparar alerta 24h
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains("assignid=7001"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "lastattempt": {
+                    "submission": { "id": 7101, "status": "new" },
+                    "graded": false,
+                    "gradingstatus": "notgraded"
+                }
+            })))
+            .mount(&moodle_server)
+            .await;
+
+        // Tarea 7002: vence en 1h (<= 2h, no entregada) -> DEBE omitir alerta 24h
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains("assignid=7002"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "lastattempt": {
+                    "submission": { "id": 7102, "status": "new" },
+                    "graded": false,
+                    "gradingstatus": "notgraded"
+                }
+            })))
+            .mount(&moodle_server)
+            .await;
+
+        // Tarea 7003: vence en 10h pero ya entregada (status == "submitted") -> DEBE omitir alerta 24h
+        Mock::given(method("POST"))
+            .and(path("/webservice/rest/server.php"))
+            .and(wiremock::matchers::body_string_contains("assignid=7003"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "lastattempt": {
+                    "submission": { "id": 7103, "status": "submitted" },
+                    "graded": false,
+                    "gradingstatus": "notgraded"
+                }
+            })))
+            .mount(&moodle_server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_scanner_deadline_24h_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = crate::storage::init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", telegram_server.uri())).unwrap(),
+        );
+        let moodle = MoodleClient::new(moodle_server.uri());
+
+        // Inicializar datos: Curso 700
+        CoursesRepository::upsert_course(&pool, 700, "Calculo III", Some("CALC3"))
+            .await
+            .unwrap();
+        CoursesRepository::touch_scanned(&pool, 700).await.unwrap();
+
+        // Alumno 888
+        UsersRepository::upsert_login(&pool, 888, "24010888", 88, "Estudiante 24h", "tok_888")
+            .await
+            .unwrap();
+        CoursesRepository::link_user(&pool, 888, 700).await.unwrap();
+
+        let now = chrono::Utc::now().timestamp();
+        // Insertar tareas en repo
+        AssignmentsRepository::upsert(
+            &pool,
+            7001,
+            Some(70010),
+            700,
+            "Guia 1 (10h)",
+            Some(now + 10 * 3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+        AssignmentsRepository::upsert(
+            &pool,
+            7002,
+            Some(70020),
+            700,
+            "Guia 2 (1h)",
+            Some(now + 3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+        AssignmentsRepository::upsert(
+            &pool,
+            7003,
+            Some(70030),
+            700,
+            "Guia 3 (10h entregada)",
+            Some(now + 10 * 3600),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let worker = ScannerWorker::new(pool.clone(), moodle, bot, config);
+        let summary = worker.run_scan_cycle_with_count(0).await.unwrap();
+
+        // Debe haber despachado exactamente 1 alerta (la de 24h para 7001)
+        assert_eq!(summary.alerts_dispatched, 1);
+
+        // Verificar sent_alerts
+        let alert_7001_claimed = AlertsRepository::is_claimed(&pool, "deadline:888:7001:24h")
+            .await
+            .unwrap();
+        assert!(
+            alert_7001_claimed,
+            "Alerta 24h para 7001 debe haber sido enviada"
+        );
+
+        let alert_7002_claimed = AlertsRepository::is_claimed(&pool, "deadline:888:7002:24h")
+            .await
+            .unwrap();
+        assert!(
+            !alert_7002_claimed,
+            "Alerta 24h para 7002 debe omitirse por quedar <= 2h"
+        );
+
+        let alert_7003_claimed = AlertsRepository::is_claimed(&pool, "deadline:888:7003:24h")
+            .await
+            .unwrap();
+        assert!(
+            !alert_7003_claimed,
+            "Alerta 24h para 7003 debe omitirse por ya estar entregada"
+        );
+
+        // En un segundo ciclo, no debe volverse a enviar (idempotencia)
+        let summary2 = worker.run_scan_cycle_with_count(1).await.unwrap();
+        assert_eq!(summary2.alerts_dispatched, 0);
     }
 }

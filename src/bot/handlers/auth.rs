@@ -1,6 +1,7 @@
 use crate::bot::rate_limit::LoginRateLimiter;
 use crate::bot::{copy, Bot};
 use crate::moodle::{MoodleClient, MoodleError, Priority};
+use crate::scheduler::deadlines::DeadlineScheduler;
 use crate::storage::{AdmissionResult, AlertsRepository, UsersRepository};
 use sqlx::SqlitePool;
 use teloxide::prelude::*;
@@ -155,11 +156,20 @@ pub async fn handle_login(
     Ok(())
 }
 
-/// Maneja el comando `/logout` eliminando al usuario y purgando sus alertas pendientes (A-14).
-pub async fn handle_logout(bot: Bot, msg: Message, pool: SqlitePool) -> Result<(), anyhow::Error> {
+/// Maneja el comando `/logout` eliminando al usuario, purgando sus alertas y cancelando sus jobs en el scheduler (A-14, A-16).
+pub async fn handle_logout(
+    bot: Bot,
+    msg: Message,
+    pool: SqlitePool,
+    scheduler: Option<DeadlineScheduler>,
+) -> Result<(), anyhow::Error> {
     let chat_id = msg.chat.id.0;
     let deleted = UsersRepository::delete(&pool, chat_id).await?;
     let _ = AlertsRepository::purge_chat(&pool, chat_id).await;
+
+    if let Some(ref sched) = scheduler {
+        let _ = sched.cancel_for_user(chat_id).await;
+    }
 
     if deleted {
         tracing::info!(

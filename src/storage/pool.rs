@@ -20,6 +20,10 @@ pub async fn build_pool(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
     let options = create_connect_options(database_url)?;
     SqlitePoolOptions::new()
         .max_connections(5)
+        .idle_timeout(None)
+        .max_lifetime(None)
+        .test_before_acquire(false)
+        .acquire_timeout(Duration::from_secs(3600 * 24))
         .connect_with(options)
         .await
 }

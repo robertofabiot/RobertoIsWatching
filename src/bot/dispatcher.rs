@@ -12,6 +12,7 @@ use crate::bot::rate_limit::LoginRateLimiter;
 use crate::bot::Bot;
 use crate::config::Config;
 use crate::moodle::MoodleClient;
+use crate::scheduler::deadlines::DeadlineScheduler;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 use teloxide::dispatching::{Dispatcher, UpdateFilterExt};
@@ -23,6 +24,7 @@ pub fn create_dispatcher(
     pool: SqlitePool,
     moodle: MoodleClient,
     config: Arc<Config>,
+    scheduler: Option<DeadlineScheduler>,
 ) -> Dispatcher<Bot, anyhow::Error, teloxide::dispatching::DefaultKey> {
     let rate_limiter = LoginRateLimiter::new();
 
@@ -51,7 +53,7 @@ pub fn create_dispatcher(
         .branch(callback_handler);
 
     Dispatcher::builder(bot, handler)
-        .dependencies(dptree::deps![pool, moodle, config, rate_limiter])
+        .dependencies(dptree::deps![pool, moodle, config, rate_limiter, scheduler])
         .enable_ctrlc_handler()
         .build()
 }
