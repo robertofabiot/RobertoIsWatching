@@ -6,6 +6,7 @@ use crate::config::Config;
 use crate::moodle::breaker::CircuitState;
 use crate::moodle::gate::Priority;
 use crate::moodle::MoodleClient;
+use crate::scheduler::deadlines::{DeadlineJob, DeadlineScheduler};
 use crate::services::alerts::AlertService;
 use crate::services::session;
 use crate::storage::assignments::UpsertAssignmentResult;
@@ -121,6 +122,7 @@ pub struct ScannerWorker {
     pub(crate) initial_delay: Duration,
     pub(crate) cycle_count: AtomicU64,
     pub(crate) last_breaker_state: Arc<Mutex<CircuitState>>,
+    pub(crate) scheduler: Option<DeadlineScheduler>,
 }
 
 impl ScannerWorker {
@@ -135,7 +137,14 @@ impl ScannerWorker {
             initial_delay: Duration::from_secs(DEFAULT_INITIAL_DELAY_SECS),
             cycle_count: AtomicU64::new(0),
             last_breaker_state: Arc::new(Mutex::new(CircuitState::Up)),
+            scheduler: None,
         }
+    }
+
+    /// Asocia un planificador de plazos (`DeadlineScheduler`) para agendar alertas de 2h.
+    pub fn with_scheduler(mut self, scheduler: DeadlineScheduler) -> Self {
+        self.scheduler = Some(scheduler);
+        self
     }
 
     /// Permite personalizar el intervalo y el retardo inicial (esencial para tests).
@@ -616,6 +625,22 @@ impl ScannerWorker {
                                     {
                                         summary.alerts_dispatched += 1;
                                     }
+                                }
+
+                                // Programar alerta crítica de 2h en el planificador min-heap (RF-04, A-16)
+                                if !is_submitted && !is_graded {
+                                    if let Some(ref sched) = self.scheduler {
+                                        let _ = sched
+                                            .schedule(DeadlineJob {
+                                                chat_id: student.chat_id,
+                                                assignment_id: assign.id,
+                                                effective_due,
+                                                version: 0,
+                                            })
+                                            .await;
+                                    }
+                                } else if let Some(ref sched) = self.scheduler {
+                                    let _ = sched.cancel_job(student.chat_id, assign.id).await;
                                 }
                             }
                         }
