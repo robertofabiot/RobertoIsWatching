@@ -47,9 +47,8 @@ async fn main() {
 
     let app = app::build(pool, bot, moodle, config_arc);
     let mut dispatcher = app.dispatcher;
-    // cableado en el siguiente commit
-    let _ = app.scanner;
-    let _ = app.deadline_worker;
+    let _running = app::spawn_workers(app.scanner, app.deadline_worker);
+    // TODO A3: coordinar apagado ordenado de workers y dispatcher
 
     tracing::info!(
         "Dispatcher de Telegram iniciado. Escuchando actualizaciones vía Long Polling..."
