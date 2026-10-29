@@ -61,6 +61,7 @@ impl MoodleClient {
         // Adquirir permiso de gate con prioridad interactiva
         let _permit = self.gate().acquire(Priority::Interactive).await?;
 
+        self.counters().inc(Priority::Interactive);
         let res = self.http().post(&token_url).form(&login_body).send().await;
 
         // Sobrescribir inmediatamente la contraseña en memoria (RF-01, A-09)

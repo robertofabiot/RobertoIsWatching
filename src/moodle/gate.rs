@@ -1,4 +1,5 @@
 use crate::moodle::error::{MoodleError, Result};
+use crate::moodle::metrics::{RequestCounters, RequestCounts};
 use rand::Rng;
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,6 +42,7 @@ enum PermitInner {
 pub struct MoodleGate {
     global: Arc<Semaphore>,
     background: Arc<Semaphore>,
+    counters: Arc<RequestCounters>,
     jitter_min_ms: u64,
     jitter_max_ms: u64,
 }
@@ -57,9 +59,41 @@ impl MoodleGate {
         Self {
             global: Arc::new(Semaphore::new(global_capacity)),
             background: Arc::new(Semaphore::new(background_capacity)),
+            counters: Arc::new(RequestCounters::new()),
             jitter_min_ms: 100,
             jitter_max_ms: 300,
         }
+    }
+
+    /// Asocia contadores de peticiones al gate.
+    pub fn with_counters(mut self, counters: Arc<RequestCounters>) -> Self {
+        self.counters = counters;
+        self
+    }
+
+    /// Retorna los contadores de peticiones asociados al gate.
+    pub fn counters(&self) -> &RequestCounters {
+        &self.counters
+    }
+
+    /// Retorna una referencia compartida (`Arc`) a los contadores de peticiones.
+    pub fn counters_arc(&self) -> Arc<RequestCounters> {
+        Arc::clone(&self.counters)
+    }
+
+    /// Incrementa manualmente los contadores asociados al gate.
+    pub fn inc(&self, priority: Priority) {
+        self.counters.inc(priority);
+    }
+
+    /// Retorna un snapshot inmutable de los contadores de peticiones.
+    pub fn snapshot(&self) -> RequestCounts {
+        self.counters.snapshot()
+    }
+
+    /// Reinicia los contadores a cero y retorna el valor previo al reinicio.
+    pub fn reset(&self) -> RequestCounts {
+        self.counters.reset()
     }
 
     /// Permite configurar el rango de jitter en milisegundos.

@@ -1,6 +1,6 @@
 use robertos_watching_bot::moodle::{
     CircuitBreaker, CircuitState, MoodleClient, MoodleClientBuilder, MoodleError, MoodleGate,
-    Priority,
+    Priority, RequestCounts,
 };
 use robertos_watching_bot::storage::DonorToken;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -282,4 +282,152 @@ async fn test_circuit_breaker_trips_and_recovers() {
     assert!(recovered.is_ok());
     assert_eq!(client.breaker().state(), CircuitState::Up);
     assert!(!client.breaker().is_open());
+}
+
+#[tokio::test]
+async fn test_request_counters_distinguish_priorities_and_count_retries() {
+    let server = MockServer::start().await;
+
+    let assign_attempts = Arc::new(AtomicUsize::new(0));
+    let assign_attempts_clone = Arc::clone(&assign_attempts);
+
+    struct RetryOnceResponder {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    impl wiremock::Respond for RetryOnceResponder {
+        fn respond(&self, _request: &Request) -> ResponseTemplate {
+            let attempt = self.attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                // Primer intento falla con error transitorio 500 (fuerza 1 reintento)
+                ResponseTemplate::new(500)
+            } else {
+                // Siguiente intento responde 200 OK con asignaciones
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "courses": []
+                }))
+            }
+        }
+    }
+
+    // Mock para get_site_info (Interactive)
+    Mock::given(method("POST"))
+        .and(path("/webservice/rest/server.php"))
+        .and(wiremock::matchers::body_string_contains(
+            "wsfunction=core_webservice_get_site_info",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "userid": 1234,
+            "fullname": "Test User"
+        })))
+        .mount(&server)
+        .await;
+
+    // Mock para user_courses (Interactive)
+    Mock::given(method("POST"))
+        .and(path("/webservice/rest/server.php"))
+        .and(wiremock::matchers::body_string_contains(
+            "wsfunction=core_enrol_get_users_courses",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .mount(&server)
+        .await;
+
+    // Mock para fetch_course_assignments (Background con 1 reintento forzado)
+    Mock::given(method("POST"))
+        .and(path("/webservice/rest/server.php"))
+        .and(wiremock::matchers::body_string_contains(
+            "wsfunction=mod_assign_get_assignments",
+        ))
+        .respond_with(RetryOnceResponder {
+            attempts: assign_attempts_clone,
+        })
+        .mount(&server)
+        .await;
+
+    // Mock para fetch_course_contents (Background sin reintentos)
+    Mock::given(method("POST"))
+        .and(path("/webservice/rest/server.php"))
+        .and(wiremock::matchers::body_string_contains(
+            "wsfunction=core_course_get_contents",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .mount(&server)
+        .await;
+
+    let gate = MoodleGate::new(4, 3).without_jitter();
+    let client = MoodleClient::from_builder(
+        MoodleClientBuilder::new()
+            .base_url(server.uri())
+            .gate(gate)
+            .max_retries(2),
+    );
+
+    // Estado inicial: 0 peticiones
+    assert_eq!(client.snapshot(), RequestCounts::default());
+    assert_eq!(client.gate().snapshot(), RequestCounts::default());
+
+    // 1. Dos peticiones interactivas
+    let site_info = client
+        .get_site_info("token_test", Priority::Interactive)
+        .await
+        .unwrap();
+    assert_eq!(site_info.userid, 1234);
+
+    let courses = client
+        .user_courses("token_test", 1234, Priority::Interactive)
+        .await
+        .unwrap();
+    assert!(courses.is_empty());
+
+    let s1 = client.snapshot();
+    assert_eq!(s1.interactive, 2);
+    assert_eq!(s1.background, 0);
+    assert_eq!(s1.total(), 2);
+    assert_eq!(client.gate().snapshot(), s1);
+
+    // 2. Una petición de background con reintento forzado (500 -> 200, total 2 intentos HTTP)
+    let assignments = client
+        .fetch_course_assignments("token_test", 101, Priority::Background)
+        .await
+        .unwrap();
+    assert!(assignments.is_empty());
+    assert_eq!(assign_attempts.load(Ordering::SeqCst), 2);
+
+    let s2 = client.snapshot();
+    assert_eq!(s2.interactive, 2);
+    assert_eq!(s2.background, 2);
+    assert_eq!(s2.total(), 4);
+
+    let diff1 = s2.diff(&s1);
+    assert_eq!(diff1.interactive, 0);
+    assert_eq!(diff1.background, 2);
+    assert_eq!(diff1.total(), 2);
+
+    // 3. Una petición de background adicional sin reintentos (1 intento HTTP)
+    let contents = client
+        .fetch_course_contents("token_test", 101, Priority::Background)
+        .await
+        .unwrap();
+    assert!(contents.is_empty());
+
+    let s3 = client.snapshot();
+    assert_eq!(s3.interactive, 2);
+    assert_eq!(s3.background, 3);
+    assert_eq!(s3.total(), 5);
+
+    let diff2 = s3.diff(&s2);
+    assert_eq!(diff2.interactive, 0);
+    assert_eq!(diff2.background, 1);
+    assert_eq!(diff2.total(), 1);
+
+    // 4. Probar reset(): devuelve la última instantánea y resetea a 0 tanto en client como en gate
+    let reset_val = client.reset();
+    assert_eq!(reset_val, s3);
+
+    let s_after = client.snapshot();
+    assert_eq!(s_after.interactive, 0);
+    assert_eq!(s_after.background, 0);
+    assert_eq!(s_after.total(), 0);
+    assert_eq!(client.gate().snapshot(), s_after);
 }
