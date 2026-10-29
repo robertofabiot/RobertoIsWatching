@@ -61,7 +61,7 @@
             {
               "name": "onlinetext",
               "description": "Entregas de texto en línea",
-              "text": "<p>Integrantes: <br /><br />- Rodolfo Ramírez <br />- Roberto Tercero</p>\r\n<p></p>\r\n<p><a href=\"https://github.com/rodolfo-collado/CasosEstudioJavaFx\">enlace</a></p>",
+              "text": "<p>Integrantes: <br /><br />- Estudiante Prueba 1 <br />- Estudiante Prueba 2</p>\r\n<p></p>\r\n<p><a href=\"https://github.com/ejemplo/proyecto-javafx\">enlace</a></p>",
               "format": 1
             }
           ]
@@ -92,11 +92,11 @@
     "grade": {
       "id": 1519547,
       "assignment": 68822,
-      "userid": 787,
+      "userid": 10001,
       "attemptnumber": 0,
       "timecreated": 1788380606,
       "timemodified": 1791680372,
-      "grader": 14250,
+      "grader": 20001,
       "grade": "30.00000"
     },
     "gradefordisplay": "30 / 30",

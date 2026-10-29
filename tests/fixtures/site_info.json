@@ -5,7 +5,7 @@
   "lastname": "PRUEBA",
   "fullname": "ESTUDIANTE PRUEBA",
   "lang": "es",
-  "userid": 787,
+  "userid": 10001,
   "siteurl": "https://uamvirtual.uam.edu.ni/grado",
   "userpictureurl": "https://uamvirtual.uam.edu.ni/grado/pluginfile.php/user/icon/f1",
   "functions": [
@@ -1845,7 +1845,7 @@
   "userquota": 209715200,
   "usermaxuploadfilesize": 10485760,
   "userhomepage": 1,
-  "userprivateaccesskey": "c624e7a1ba8a0bf3509e114f2212b190",
+  "userprivateaccesskey": "",
   "siteid": 1,
   "sitecalendartype": "gregorian",
   "usercalendartype": "gregorian",
