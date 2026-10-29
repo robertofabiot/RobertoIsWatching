@@ -337,7 +337,56 @@ impl ScannerWorker {
                             newly_inserted_assignments.push(inserted_assign);
                         }
                     }
-                    UpsertAssignmentResult::Updated { .. } => {}
+                    UpsertAssignmentResult::Updated {
+                        assignment,
+                        changes,
+                    } => {
+                        // Si cambió la fecha de vencimiento general, reprogramar jobs de alerta 2h
+                        if changes.duedate_changed {
+                            if let Some(ref sched) = self.scheduler {
+                                if let Ok(enrolled) =
+                                    UsersRepository::active_users_for_course(&self.pool, course.id)
+                                        .await
+                                {
+                                    let now_ts = chrono::Utc::now().timestamp();
+                                    for st in enrolled {
+                                        if let Ok(sub_opt) = SubmissionsRepository::get(
+                                            &self.pool,
+                                            st.chat_id,
+                                            assignment.id,
+                                        )
+                                        .await
+                                        {
+                                            let is_done = sub_opt
+                                                .as_ref()
+                                                .map(|s| {
+                                                    s.status.as_deref() == Some("submitted")
+                                                        || s.graded
+                                                        || s.grade.is_some()
+                                                })
+                                                .unwrap_or(false);
+                                            if !is_done {
+                                                let eff_due = sub_opt
+                                                    .as_ref()
+                                                    .and_then(|s| s.due_override)
+                                                    .or(assignment.duedate)
+                                                    .unwrap_or(0);
+                                                if eff_due > now_ts {
+                                                    let _ = sched
+                                                        .reschedule(
+                                                            st.chat_id,
+                                                            assignment.id,
+                                                            eff_due,
+                                                        )
+                                                        .await;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     UpsertAssignmentResult::Unchanged(_) => {}
                 }
             }
@@ -627,17 +676,34 @@ impl ScannerWorker {
                                     }
                                 }
 
-                                // Programar alerta crítica de 2h en el planificador min-heap (RF-04, A-16)
+                                // Programar o reprogramar alerta crítica de 2h en el planificador min-heap (RF-04, A-16)
                                 if !is_submitted && !is_graded {
                                     if let Some(ref sched) = self.scheduler {
-                                        let _ = sched
-                                            .schedule(DeadlineJob {
-                                                chat_id: student.chat_id,
-                                                assignment_id: assign.id,
-                                                effective_due,
-                                                version: 0,
-                                            })
-                                            .await;
+                                        // Si hubo cambio explícito en due_override, reprogramar
+                                        let is_override_change = matches!(
+                                            &sub_res,
+                                            UpsertSubmissionResult::Updated { changes, .. }
+                                                if changes.due_override_changed
+                                        );
+
+                                        if is_override_change {
+                                            let _ = sched
+                                                .reschedule(
+                                                    student.chat_id,
+                                                    assign.id,
+                                                    effective_due,
+                                                )
+                                                .await;
+                                        } else {
+                                            let _ = sched
+                                                .schedule(DeadlineJob {
+                                                    chat_id: student.chat_id,
+                                                    assignment_id: assign.id,
+                                                    effective_due,
+                                                    version: 0,
+                                                })
+                                                .await;
+                                        }
                                     }
                                 } else if let Some(ref sched) = self.scheduler {
                                     let _ = sched.cancel_job(student.chat_id, assign.id).await;

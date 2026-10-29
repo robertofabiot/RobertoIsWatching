@@ -445,6 +445,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_reschedule_invalidates_earlier_version() {
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url: "sqlite::memory:".to_string(),
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = crate::storage::init(&config).await.unwrap();
+        let bot = crate::bot::create_bot(&config.bot_token);
+        let (_scheduler, mut worker) = DeadlineScheduler::new(pool, bot, config);
+
+        // Agendar versión 1 con due = 10000 (fire_at = 2800)
+        worker.push_job(DeadlineJob {
+            chat_id: 1,
+            assignment_id: 10,
+            effective_due: 10000,
+            version: 0,
+        });
+        assert_eq!(worker.versions.get(&(1, 10)), Some(&1));
+
+        // Reprogramar fecha con due = 20000 (fire_at = 12800) -> versión 2
+        worker.push_job(DeadlineJob {
+            chat_id: 1,
+            assignment_id: 10,
+            effective_due: 20000,
+            version: 0,
+        });
+        assert_eq!(worker.versions.get(&(1, 10)), Some(&2));
+
+        // El heap tiene 2 elementos: el primero que sale es el de due=10000 (versión 1)
+        assert_eq!(worker.len(), 2);
+        let popped_1 = worker.heap.pop().unwrap();
+        assert_eq!(popped_1.job.version, 1);
+        // Debe ser inválido porque la versión actual en el mapa es 2
+        let is_current_1 = worker
+            .versions
+            .get(&(popped_1.job.chat_id, popped_1.job.assignment_id))
+            .map(|&v| v == popped_1.job.version)
+            .unwrap_or(false);
+        assert!(
+            !is_current_1,
+            "El job con versión 1 debe considerarse obsoleto"
+        );
+
+        // El segundo que sale es el de due=20000 (versión 2)
+        let popped_2 = worker.heap.pop().unwrap();
+        assert_eq!(popped_2.job.version, 2);
+        let is_current_2 = worker
+            .versions
+            .get(&(popped_2.job.chat_id, popped_2.job.assignment_id))
+            .map(|&v| v == popped_2.job.version)
+            .unwrap_or(false);
+        assert!(
+            is_current_2,
+            "El job con versión 2 debe ser válido y vigente"
+        );
+    }
+
+    #[tokio::test]
     async fn test_process_deadline_alert_verification_in_sqlite() {
         use crate::bot::create_bot_with_url;
         use crate::storage::submissions::SubmissionData;
