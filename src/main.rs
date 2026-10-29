@@ -1,8 +1,10 @@
+use robertos_watching_bot::app;
 use robertos_watching_bot::bot;
 use robertos_watching_bot::config::Config;
 use robertos_watching_bot::moodle::{self, MoodleClient};
 use robertos_watching_bot::{storage, telemetry};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() {
@@ -44,20 +46,22 @@ async fn main() {
     let moodle = MoodleClient::new(moodle::DEFAULT_BASE_URL);
     let config_arc = Arc::new(config);
 
-    let (scheduler, _scheduler_worker) =
-        robertos_watching_bot::scheduler::deadlines::DeadlineScheduler::new(
-            pool.clone(),
-            bot.clone(),
-            config_arc.clone(),
-        );
+    let app = app::build(pool, bot, moodle, config_arc);
+    let mut dispatcher = app.dispatcher;
+    let running = app::spawn_workers(app.scanner, app.deadline_worker);
 
-    let mut dispatcher =
-        bot::dispatcher::create_dispatcher(bot, pool, moodle, config_arc, Some(scheduler));
+    app::setup_sigterm_handler(&dispatcher);
 
     tracing::info!(
         "Dispatcher de Telegram iniciado. Escuchando actualizaciones vía Long Polling..."
     );
     dispatcher.dispatch().await;
 
-    tracing::info!("Apagado limpio completado. Hasta pronto.");
+    let clean = running.shutdown_and_wait(Duration::from_secs(10)).await;
+
+    if clean {
+        tracing::info!("Apagado limpio completado. Hasta pronto.");
+    } else {
+        tracing::warn!("Apagado completado con advertencias o errores en los workers.");
+    }
 }

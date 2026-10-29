@@ -35,6 +35,7 @@ pub enum ConfigError {
     InvalidDatabaseUrl(String),
     InvalidMaxUsers(String),
     InvalidTimezone(String),
+    InvalidScanInterval(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -51,6 +52,9 @@ impl fmt::Display for ConfigError {
                 f,
                 "BOT_TZ inválida: '{tz}' no es una zona horaria IANA válida"
             ),
+            ConfigError::InvalidScanInterval(msg) => {
+                write!(f, "SCAN_INTERVAL_MIN inválido: {msg}")
+            }
         }
     }
 }
@@ -135,7 +139,24 @@ impl Config {
             .unwrap_or_else(|| "info,robertos_watching_bot=debug".to_string());
 
         let scan_interval_min = match map.get("SCAN_INTERVAL_MIN").map(|s| s.trim()) {
-            Some(val) if !val.is_empty() => val.parse::<u32>().unwrap_or(30),
+            Some(val) if !val.is_empty() => {
+                let parsed = val.parse::<u32>().map_err(|_| {
+                    ConfigError::InvalidScanInterval(format!(
+                        "no es un número entero válido: '{val}'"
+                    ))
+                })?;
+                if parsed == 0 {
+                    return Err(ConfigError::InvalidScanInterval(
+                        "SCAN_INTERVAL_MIN debe ser mayor que 0".to_string(),
+                    ));
+                }
+                if parsed > 1440 {
+                    return Err(ConfigError::InvalidScanInterval(
+                        "SCAN_INTERVAL_MIN no debe exceder 1440 minutos (24 horas)".to_string(),
+                    ));
+                }
+                parsed
+            }
             _ => 30,
         };
 
@@ -318,6 +339,30 @@ mod tests {
         env.insert("BOT_TZ", "Mars/Phobos");
         let err = Config::from_iter(env).unwrap_err();
         assert!(matches!(err, ConfigError::InvalidTimezone(_)));
+    }
+
+    #[test]
+    fn test_config_invalid_scan_interval_zero() {
+        let mut env = valid_env();
+        env.insert("SCAN_INTERVAL_MIN", "0");
+        let err = Config::from_iter(env).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidScanInterval(_)));
+    }
+
+    #[test]
+    fn test_config_invalid_scan_interval_too_large() {
+        let mut env = valid_env();
+        env.insert("SCAN_INTERVAL_MIN", "1441");
+        let err = Config::from_iter(env).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidScanInterval(_)));
+    }
+
+    #[test]
+    fn test_config_invalid_scan_interval_not_a_number() {
+        let mut env = valid_env();
+        env.insert("SCAN_INTERVAL_MIN", "not_a_number");
+        let err = Config::from_iter(env).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidScanInterval(_)));
     }
 
     #[test]
