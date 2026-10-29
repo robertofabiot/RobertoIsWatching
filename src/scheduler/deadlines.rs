@@ -25,17 +25,18 @@ pub struct DeadlineJob {
     pub version: u64,
 }
 
-/// Elemento en el BinaryHeap ordenado como min-heap por `fire_at` (menor tiempo primero).
+/// Elemento en el BinaryHeap ordenado como min-heap por `fire_instant` (menor tiempo primero).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScheduledDeadline {
+    pub fire_instant: tokio::time::Instant,
     pub fire_at: DateTime<Utc>,
     pub job: DeadlineJob,
 }
 
 impl Ord for ScheduledDeadline {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Invertido para min-heap: el fire_at más cercano se despacha primero
-        other.fire_at.cmp(&self.fire_at)
+        // Invertido para min-heap: el fire_instant más cercano se despacha primero
+        other.fire_instant.cmp(&self.fire_instant)
     }
 }
 
@@ -130,6 +131,9 @@ pub struct DeadlineWorker {
     rx: mpsc::Receiver<DeadlineCommand>,
     heap: BinaryHeap<ScheduledDeadline>,
     versions: HashMap<(i64, i64), u64>,
+    booted: bool,
+    start_instant: tokio::time::Instant,
+    start_epoch: i64,
 }
 
 /// Resumen de operaciones realizadas durante la reconstrucción inicial del min-heap (boot lookahead).
@@ -163,7 +167,16 @@ impl DeadlineWorker {
             rx,
             heap: BinaryHeap::new(),
             versions: HashMap::new(),
+            booted: false,
+            start_instant: tokio::time::Instant::now(),
+            start_epoch: Utc::now().timestamp(),
         }
+    }
+
+    /// Retorna el epoch timestamp actual correlacionado con el reloj virtual/real de Tokio.
+    pub fn current_epoch(&self) -> i64 {
+        let elapsed = tokio::time::Instant::now().saturating_duration_since(self.start_instant);
+        self.start_epoch + elapsed.as_secs() as i64
     }
 
     /// Retorna cuántos jobs se encuentran activos en el min-heap.
@@ -188,13 +201,29 @@ impl DeadlineWorker {
         let fire_epoch = job.effective_due - 2 * 3600;
         let fire_at = DateTime::from_timestamp(fire_epoch, 0).unwrap_or_else(Utc::now);
 
-        self.heap.push(ScheduledDeadline { fire_at, job });
+        let now_epoch = self.current_epoch();
+        let fire_instant = if fire_epoch <= now_epoch {
+            tokio::time::Instant::now()
+        } else {
+            let delay_secs = (fire_epoch - now_epoch) as u64;
+            tokio::time::Instant::now() + Duration::from_secs(delay_secs)
+        };
+
+        self.heap.push(ScheduledDeadline {
+            fire_instant,
+            fire_at,
+            job,
+        });
     }
 
     /// Reconstruye el min-heap desde SQLite al arrancar el bot (boot lookahead, Plan Maestro §5.1.3).
     /// Las tareas dentro de la ventana de 2h no enviadas se disparan; las tareas futuras se agendan en el heap;
     /// las tareas vencidas se descartan silenciosamente.
     pub async fn boot_lookahead(&mut self) -> Result<BootLookaheadSummary, anyhow::Error> {
+        if self.booted {
+            return Ok(BootLookaheadSummary::default());
+        }
+        self.booted = true;
         tracing::info!("Iniciando reconstrucción del min-heap desde SQLite (boot lookahead)...");
         let mut summary = BootLookaheadSummary::default();
 
@@ -218,7 +247,7 @@ impl DeadlineWorker {
         .fetch_all(&self.pool)
         .await?;
 
-        let now_epoch = Utc::now().timestamp();
+        let now_epoch = self.current_epoch();
 
         for row in rows {
             if row.effective_due <= now_epoch {
@@ -287,19 +316,9 @@ impl DeadlineWorker {
         }
 
         loop {
-            let sleep_duration = match self.heap.peek() {
-                Some(top) => {
-                    let now = Utc::now();
-                    if top.fire_at <= now {
-                        Duration::ZERO
-                    } else {
-                        (top.fire_at - now).to_std().unwrap_or(Duration::ZERO)
-                    }
-                }
-                None => {
-                    // Si no hay tareas pendientes, esperar hasta nuevo comando o shutdown
-                    Duration::from_secs(3600 * 24 * 365)
-                }
+            let next_instant = match self.heap.peek() {
+                Some(top) => top.fire_instant,
+                None => tokio::time::Instant::now() + Duration::from_secs(3600 * 24 * 365),
             };
 
             let has_scheduled = !self.heap.is_empty();
@@ -335,7 +354,7 @@ impl DeadlineWorker {
                         }
                     }
                 }
-                _ = tokio::time::sleep(sleep_duration), if has_scheduled => {
+                _ = tokio::time::sleep_until(next_instant), if has_scheduled => {
                     if let Some(top) = self.heap.pop() {
                         let is_current = self
                             .versions
@@ -428,7 +447,7 @@ impl DeadlineWorker {
             return Ok(());
         }
 
-        let now_epoch = Utc::now().timestamp();
+        let now_epoch = self.current_epoch();
         // Si ya está totalmente vencida (ej. se despertó tarde tras caída prolongada), no enviar
         if now_epoch >= effective_due {
             tracing::debug!(
@@ -478,7 +497,10 @@ mod tests {
         let t2 = DateTime::from_timestamp(2000, 0).unwrap();
         let t3 = DateTime::from_timestamp(1500, 0).unwrap();
 
+        let now_inst = tokio::time::Instant::now();
+
         heap.push(ScheduledDeadline {
+            fire_instant: now_inst + Duration::from_secs(2000),
             fire_at: t2,
             job: DeadlineJob {
                 chat_id: 1,
@@ -488,6 +510,7 @@ mod tests {
             },
         });
         heap.push(ScheduledDeadline {
+            fire_instant: now_inst + Duration::from_secs(1000),
             fire_at: t1,
             job: DeadlineJob {
                 chat_id: 1,
@@ -497,6 +520,7 @@ mod tests {
             },
         });
         heap.push(ScheduledDeadline {
+            fire_instant: now_inst + Duration::from_secs(1500),
             fire_at: t3,
             job: DeadlineJob {
                 chat_id: 1,
