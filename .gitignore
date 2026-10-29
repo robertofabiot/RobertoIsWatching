@@ -24,4 +24,7 @@ target/
 .agents/
 agents.md
 
+# capturas crudas de UAM, solo locales; anonimizar antes de mover a tests/fixtures
+tests/fixtures_raw/
+
 
