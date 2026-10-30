@@ -1,0 +1,13 @@
+[Unit]
+Description=Roberto's Watching - SQLite Online Backup
+After=network.target
+
+[Service]
+Type=oneshot
+User=robertos
+WorkingDirectory=/opt/robertos-watching
+ExecStart=/opt/robertos-watching/backup.sh
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/robertos-watching
