@@ -180,6 +180,38 @@ impl UsersRepository {
         Ok(())
     }
 
+    /// Obtiene los usuarios activos con resúmenes habilitados que coinciden con la hora HH:MM
+    /// y el día de la semana actual (A-18, PR #8).
+    /// Soporta domingo codificado como 7 o como 0 para máxima compatibilidad.
+    pub async fn users_due_for_summary(
+        pool: &SqlitePool,
+        time_hhmm: &str,
+        weekday_iso: u32,
+    ) -> Result<Vec<User>, sqlx::Error> {
+        let (d1, d2) = if weekday_iso == 7 || weekday_iso == 0 {
+            (7i64, 0i64)
+        } else {
+            (weekday_iso as i64, weekday_iso as i64)
+        };
+
+        sqlx::query_as::<_, User>(
+            "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, \
+                    summary_enabled, summary_times, summary_days, created_at \
+             FROM users \
+             WHERE is_active = 1 \
+               AND summary_enabled = 1 \
+               AND json_valid(summary_times) = 1 \
+               AND json_valid(summary_days) = 1 \
+               AND EXISTS (SELECT 1 FROM json_each(summary_times) WHERE value = ?) \
+               AND EXISTS (SELECT 1 FROM json_each(summary_days) WHERE value = ? OR value = ?)",
+        )
+        .bind(time_hhmm)
+        .bind(d1)
+        .bind(d2)
+        .fetch_all(pool)
+        .await
+    }
+
     /// Marca un usuario como inactivo, especificando la razón y limpiando el token por seguridad (§0.3/A-15).
     pub async fn mark_inactive(
         pool: &SqlitePool,

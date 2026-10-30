@@ -446,3 +446,104 @@ async fn test_cif_transfer_when_quota_is_full() {
 
     cleanup_test_db(pool, db_path);
 }
+
+#[tokio::test]
+async fn test_users_due_for_summary_selection() {
+    let (pool, db_path) = setup_test_db("due_summary").await;
+
+    // 1. Usuario normal de Lun a Vie a las 07:30 y 20:00
+    let u1 =
+        UsersRepository::upsert_login(&pool, 7001, "CIF_7001", 1, "Estudiante LunVie", "tok_1")
+            .await
+            .unwrap();
+    UsersRepository::update_summary_config(
+        &pool,
+        u1.chat_id,
+        true,
+        r#"["07:30", "20:00"]"#,
+        r#"[1, 2, 3, 4, 5]"#,
+    )
+    .await
+    .unwrap();
+
+    // 2. Usuario domingo codificado como 7
+    let u2 = UsersRepository::upsert_login(&pool, 7002, "CIF_7002", 2, "Estudiante Dom7", "tok_2")
+        .await
+        .unwrap();
+    UsersRepository::update_summary_config(&pool, u2.chat_id, true, r#"["07:30"]"#, r#"[7]"#)
+        .await
+        .unwrap();
+
+    // 3. Usuario domingo codificado como 0
+    let u3 = UsersRepository::upsert_login(&pool, 7003, "CIF_7003", 3, "Estudiante Dom0", "tok_3")
+        .await
+        .unwrap();
+    UsersRepository::update_summary_config(&pool, u3.chat_id, true, r#"["07:30"]"#, r#"[0]"#)
+        .await
+        .unwrap();
+
+    // 4. Usuario inactivo
+    let u4 =
+        UsersRepository::upsert_login(&pool, 7004, "CIF_7004", 4, "Estudiante Inactivo", "tok_4")
+            .await
+            .unwrap();
+    UsersRepository::update_summary_config(&pool, u4.chat_id, true, r#"["07:30"]"#, r#"[1]"#)
+        .await
+        .unwrap();
+    UsersRepository::mark_inactive(&pool, u4.chat_id, "user_blocked")
+        .await
+        .unwrap();
+
+    // 5. Usuario con summary_enabled = false
+    let u5 =
+        UsersRepository::upsert_login(&pool, 7005, "CIF_7005", 5, "Estudiante Disabled", "tok_5")
+            .await
+            .unwrap();
+    UsersRepository::update_summary_config(&pool, u5.chat_id, false, r#"["07:30"]"#, r#"[1]"#)
+        .await
+        .unwrap();
+
+    // 6. Usuario con JSON corrupto
+    let u6 =
+        UsersRepository::upsert_login(&pool, 7006, "CIF_7006", 6, "Estudiante Corrupto", "tok_6")
+            .await
+            .unwrap();
+    sqlx::query("UPDATE users SET summary_times = 'corrupt_json', summary_days = 'invalid' WHERE chat_id = ?")
+        .bind(u6.chat_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Consulta en Lunes (1) a las 07:30 -> debe retornar únicamente u1
+    let due_mon_0730 = UsersRepository::users_due_for_summary(&pool, "07:30", 1)
+        .await
+        .unwrap();
+    assert_eq!(due_mon_0730.len(), 1);
+    assert_eq!(due_mon_0730[0].chat_id, 7001);
+
+    // Consulta en Lunes (1) a las 08:00 -> vacío
+    let due_mon_0800 = UsersRepository::users_due_for_summary(&pool, "08:00", 1)
+        .await
+        .unwrap();
+    assert!(due_mon_0800.is_empty());
+
+    // Consulta en Domingo con weekday_iso = 7 -> debe retornar u2 y u3
+    let due_sun_7 = UsersRepository::users_due_for_summary(&pool, "07:30", 7)
+        .await
+        .unwrap();
+    assert_eq!(due_sun_7.len(), 2);
+    let ids: Vec<i64> = due_sun_7.iter().map(|u| u.chat_id).collect();
+    assert!(ids.contains(&7002));
+    assert!(ids.contains(&7003));
+
+    // Consulta en Domingo con weekday_iso = 0 -> debe retornar u2 y u3
+    let due_sun_0 = UsersRepository::users_due_for_summary(&pool, "07:30", 0)
+        .await
+        .unwrap();
+    assert_eq!(due_sun_0.len(), 2);
+    let ids0: Vec<i64> = due_sun_0.iter().map(|u| u.chat_id).collect();
+    assert!(ids0.contains(&7002));
+    assert!(ids0.contains(&7003));
+
+    cleanup_test_db(pool, db_path);
+}
