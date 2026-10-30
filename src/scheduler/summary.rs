@@ -4,7 +4,7 @@
 use crate::bot::render::{render_daily_summary, send_chunked_html};
 use crate::bot::Bot;
 use crate::config::Config;
-use crate::storage::users::UsersRepository;
+use crate::storage::{AlertsRepository, UsersRepository};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use chrono_tz::Tz;
 use sqlx::SqlitePool;
@@ -62,6 +62,10 @@ impl SummaryWorker {
             "SummaryWorker iniciado con ticks alineados por minuto."
         );
 
+        if let Err(e) = self.boot_lookback().await {
+            tracing::error!(error = %e, "Error al ejecutar boot lookback en SummaryWorker");
+        }
+
         loop {
             let now = Utc::now();
             let sleep_duration = duration_until_next_minute(now);
@@ -82,6 +86,30 @@ impl SummaryWorker {
         tracing::info!("SummaryWorker finalizado limpiamente.");
     }
 
+    /// Ejecuta la política de recuperación tras reinicio (lookback de hasta 10 minutos).
+    /// Evalúa cada minuto en el rango [now - 10 min .. now] para despachar resúmenes pendientes
+    /// generados durante una breve interrupción, suprimiendo los anteriores a 10 min para evitar aluviones.
+    pub async fn boot_lookback(&self) -> Result<(), anyhow::Error> {
+        let now = Utc::now().with_timezone(&self.config.bot_tz);
+        let now_floored = match now.with_second(0).and_then(|t| t.with_nanosecond(0)) {
+            Some(f) => f,
+            None => now,
+        };
+
+        tracing::info!(
+            boot_time = %now_floored,
+            "Ejecutando boot lookahead de 10 minutos para resúmenes diarios"
+        );
+
+        for minute_offset in (0..=10).rev() {
+            let eval_time = now_floored - chrono::Duration::minutes(minute_offset);
+            self.evaluate_minute(&eval_time).await;
+        }
+
+        tracing::info!("Boot lookahead de resúmenes diarios completado");
+        Ok(())
+    }
+
     /// Despacha el resumen diario a un usuario específico reutilizando `render_daily_summary` (PR #8, A-13).
     /// Si no hay pendientes, envía el mensaje único con el copy calmado `PENDIENTES_ALL_CLEAR`.
     /// Si hay entregas pendientes, envía mensajes segmentados bajo 4000 caracteres con `send_chunked_html`.
@@ -100,7 +128,8 @@ impl SummaryWorker {
         Ok(())
     }
 
-    /// Evalúa el tick de un minuto específico seleccionando los usuarios correspondientes y enviando sus resúmenes.
+    /// Evalúa el tick de un minuto específico seleccionando los usuarios correspondientes y enviando sus resúmenes
+    /// bajo el patrón atómico de idempotencia claim -> send -> release-on-fail.
     pub async fn evaluate_minute(&self, dt: &DateTime<Tz>) {
         let time_hhmm = dt.format("%H:%M").to_string();
         let weekday_iso = dt.weekday().number_from_monday();
@@ -128,12 +157,64 @@ impl SummaryWorker {
             };
 
         for user in users {
-            if let Err(e) = self.dispatch_summary_to_user(user.chat_id).await {
-                tracing::error!(
-                    chat_id = user.chat_id,
-                    error = %e,
-                    "Error al despachar resumen diario al usuario"
-                );
+            let key = format!("summary:{}:{}:{}", user.chat_id, date_ymd, time_hhmm);
+
+            match AlertsRepository::try_claim(&self.pool, &key, "summary", Some(user.chat_id)).await
+            {
+                Ok(true) => {
+                    let send_res = self.dispatch_summary_to_user(user.chat_id).await;
+                    match send_res {
+                        Ok(()) => {
+                            tracing::info!(
+                                chat_id = user.chat_id,
+                                key = %key,
+                                "Resumen diario despachado exitosamente"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                chat_id = user.chat_id,
+                                key = %key,
+                                error = %err,
+                                "Error al enviar resumen diario por Telegram"
+                            );
+                            let err_lower = err.to_string().to_lowercase();
+                            if err_lower.contains("bot was blocked by the user")
+                                || err_lower.contains("user is deactivated")
+                                || err_lower.contains("chat not found")
+                            {
+                                tracing::warn!(
+                                    chat_id = user.chat_id,
+                                    "Usuario bloqueó el bot o cuenta desactivada. Marcando inactivo."
+                                );
+                                let _ = UsersRepository::mark_inactive(
+                                    &self.pool,
+                                    user.chat_id,
+                                    "bot_blocked",
+                                )
+                                .await;
+                            } else {
+                                // Error transitorio de red: liberar el claim para permitir reintento
+                                let _ = AlertsRepository::release(&self.pool, &key).await;
+                            }
+                        }
+                    }
+                }
+                Ok(false) => {
+                    tracing::debug!(
+                        chat_id = user.chat_id,
+                        key = %key,
+                        "Resumen ya reclamado o enviado previamente; deduplicación activada"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        chat_id = user.chat_id,
+                        key = %key,
+                        error = %e,
+                        "Error al intentar reclamar clave de idempotencia en sent_alerts"
+                    );
+                }
             }
         }
     }
@@ -228,6 +309,142 @@ mod tests {
         worker.dispatch_summary_to_user(5555).await.unwrap();
 
         // Limpieza
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_minute_idempotency_and_claim() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {
+                    "message_id": 102,
+                    "date": 1700000000,
+                    "chat": { "id": 6666, "type": "private" },
+                    "text": "test"
+                }
+            })))
+            .expect(1) // Debe ser llamado exactamente UNA vez
+            .mount(&server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_summary_idem_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", server.uri())).unwrap(),
+        );
+
+        let user =
+            UsersRepository::upsert_login(&pool, 6666, "CIF_6666", 1, "Estudiante Idem", "tok")
+                .await
+                .unwrap();
+        UsersRepository::update_summary_config(
+            &pool,
+            user.chat_id,
+            true,
+            r#"["07:30"]"#,
+            r#"[5]"#, // Viernes
+        )
+        .await
+        .unwrap();
+
+        let worker = SummaryWorker::new(pool.clone(), bot, config.clone());
+
+        // Viernes 2026-10-30 a las 07:30 en Managua
+        let dt = config
+            .bot_tz
+            .with_ymd_and_hms(2026, 10, 30, 7, 30, 0)
+            .unwrap();
+
+        // Primera evaluación: reclama clave y envía mensaje
+        worker.evaluate_minute(&dt).await;
+
+        let key = "summary:6666:2026-10-30:07:30";
+        assert!(AlertsRepository::is_claimed(&pool, key).await.unwrap());
+
+        // Segunda evaluación para el mismo minuto: omitido por idempotencia
+        worker.evaluate_minute(&dt).await;
+
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_minute_blocked_bot_marks_inactive() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                "ok": false,
+                "error_code": 403,
+                "description": "Forbidden: bot was blocked by the user"
+            })))
+            .mount(&server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_summary_block_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 1125347763,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", server.uri())).unwrap(),
+        );
+
+        let user =
+            UsersRepository::upsert_login(&pool, 7777, "CIF_7777", 1, "Estudiante Block", "tok")
+                .await
+                .unwrap();
+        UsersRepository::update_summary_config(&pool, user.chat_id, true, r#"["07:30"]"#, r#"[5]"#)
+            .await
+            .unwrap();
+
+        let worker = SummaryWorker::new(pool.clone(), bot, config.clone());
+        let dt = config
+            .bot_tz
+            .with_ymd_and_hms(2026, 10, 30, 7, 30, 0)
+            .unwrap();
+
+        worker.evaluate_minute(&dt).await;
+
+        let updated_user = UsersRepository::get(&pool, 7777).await.unwrap().unwrap();
+        assert!(!updated_user.is_active);
+        assert_eq!(updated_user.inactive_reason.as_deref(), Some("bot_blocked"));
+
         drop(pool);
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
