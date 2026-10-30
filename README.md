@@ -196,7 +196,7 @@ sudo systemctl stop robertos-watching
 ### 5. Parámetros de endurecimiento del servicio (`robertos-watching.service`)
 
 La unidad systemd (`deploy/robertos-watching.service`) incluye las siguientes directivas de seguridad:
-- `User=robertos`: Proceso ejecutado sin privilegios de root.
+- `User=robertos` y `Group=robertos`: Proceso ejecutado sin privilegios de root bajo usuario y grupo dedicados.
 - `NoNewPrivileges=true`: Previene elevación de privilegios mediante `setuid`/`setgid`.
 - `ProtectSystem=strict`: Monta todo el sistema de archivos (`/usr`, `/boot`, `/etc`) en modo solo lectura para el servicio.
 - `ProtectHome=true`: Oculta `/home`, `/root` y `/run/user`.
@@ -218,9 +218,10 @@ sqlite3 /opt/robertos-watching/robertos_watching.db ".backup '/opt/robertos-watc
 
 Características del respaldo:
 - **Consistencia atómica**: Genera una copia válida sin detener el servicio ni bloquear lecturas o escrituras.
+- **Resolución automática de configuración**: Detecta automáticamente `DATABASE_URL` y `BACKUP_RETENTION_DAYS` desde `/opt/robertos-watching/.env`, permitiendo también rutas personalizadas por argumento.
 - **Verificación de integridad**: Ejecuta `PRAGMA integrity_check;` sobre el archivo resultante antes de considerarlo completado.
-- **Permisos estrictos**: Asigna permisos `0600` y propiedad `robertos:robertos`.
-- **Política de retención**: Purga automáticamente respaldos con más de 30 días de antigüedad (`BACKUP_RETENTION_DAYS=30`).
+- **Permisos estrictos desde la creación**: Aplica `umask 077` durante todo el proceso, asegurando permisos `0600` y propiedad `robertos:robertos` en archivos de respaldo y `0700` en directorios.
+- **Política de retención**: Purga automáticamente respaldos con más de 30 días de antigüedad (`BACKUP_RETENTION_DAYS=30`) y limpia archivos `.tmp` residuales.
 
 ### Automatización mediante systemd timer
 
