@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=robertos
+Group=robertos
 WorkingDirectory=/opt/robertos-watching
 ExecStart=/opt/robertos-watching/robertos-watching-bot
 EnvironmentFile=/opt/robertos-watching/.env

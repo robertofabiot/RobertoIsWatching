@@ -5,8 +5,11 @@ After=network.target
 [Service]
 Type=oneshot
 User=robertos
+Group=robertos
 WorkingDirectory=/opt/robertos-watching
 ExecStart=/opt/robertos-watching/backup.sh
+EnvironmentFile=-/opt/robertos-watching/.env
+NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
