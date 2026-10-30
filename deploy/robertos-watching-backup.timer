@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Backup Timer for Roberto's Watching SQLite Database
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=1800
+Persistent=true
+Unit=robertos-watching-backup.service
+
+[Install]
+WantedBy=timers.target
