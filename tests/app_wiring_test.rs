@@ -96,7 +96,7 @@ async fn spawn_workers_runs_a_scan_cycle() {
         .scanner
         .with_delays(Duration::from_millis(50), Duration::from_millis(1));
 
-    let running = app::spawn_workers(app.scanner, app.deadline_worker);
+    let running = app::spawn_workers(app.scanner, app.deadline_worker, app.summary_worker);
 
     // Esperar a que el scanner realice al menos una petición a Moodle
     let mut requests_received = false;
@@ -178,7 +178,7 @@ async fn deadline_worker_consumes_commands() {
     let app = app::build(pool.clone(), bot, moodle, config);
     let scheduler = app.scheduler.clone();
 
-    let running = app::spawn_workers(app.scanner, app.deadline_worker);
+    let running = app::spawn_workers(app.scanner, app.deadline_worker, app.summary_worker);
 
     // Encolar comando vía DeadlineScheduler
     let alert_key = "deadline:1002:5001:2h";
@@ -213,9 +213,9 @@ async fn deadline_worker_consumes_commands() {
     assert!(clean, "El apagado de workers debió completarse limpiamente");
 }
 
-/// Test 3: Verifica que el envío de `shutdown_tx.send(true)` detiene ambos workers en < 2 s.
+/// Test 3: Verifica que el envío de `shutdown_tx.send(true)` detiene todos los workers en < 2 s.
 #[tokio::test]
-async fn shutdown_stops_both_workers() {
+async fn shutdown_stops_all_workers() {
     let rand_id: u64 = rand::random();
     let db_path = std::env::temp_dir().join(format!("test_app_wiring_shutdown_{rand_id}.db"));
     let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
@@ -226,7 +226,7 @@ async fn shutdown_stops_both_workers() {
     let moodle = MoodleClient::new("http://127.0.0.1:8080");
 
     let app = app::build(pool, bot, moodle, config);
-    let running = app::spawn_workers(app.scanner, app.deadline_worker);
+    let running = app::spawn_workers(app.scanner, app.deadline_worker, app.summary_worker);
 
     // Enviar señal de apagado
     running
@@ -234,7 +234,7 @@ async fn shutdown_stops_both_workers() {
         .send(true)
         .expect("Fallo al enviar shutdown");
 
-    // Afirmar que ambos JoinHandle terminan en < 2 segundos
+    // Afirmar que todos los JoinHandle terminan en < 2 segundos
     let scanner_res = tokio::time::timeout(Duration::from_secs(2), running.scanner_handle).await;
     assert!(
         scanner_res.is_ok(),
@@ -245,5 +245,11 @@ async fn shutdown_stops_both_workers() {
     assert!(
         deadline_res.is_ok(),
         "deadline_handle debió terminar en < 2 s"
+    );
+
+    let summary_res = tokio::time::timeout(Duration::from_secs(2), running.summary_handle).await;
+    assert!(
+        summary_res.is_ok(),
+        "summary_handle debió terminar en < 2 s"
     );
 }

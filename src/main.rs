@@ -48,7 +48,7 @@ async fn main() {
 
     let app = app::build(pool, bot, moodle, config_arc);
     let mut dispatcher = app.dispatcher;
-    let running = app::spawn_workers(app.scanner, app.deadline_worker);
+    let running = app::spawn_workers(app.scanner, app.deadline_worker, app.summary_worker);
 
     app::setup_sigterm_handler(&dispatcher);
 
