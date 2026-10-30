@@ -7,6 +7,7 @@ use crate::bot::Bot;
 use crate::config::Config;
 use crate::moodle::MoodleClient;
 use crate::scheduler::deadlines::{DeadlineScheduler, DeadlineWorker};
+use crate::scheduler::SummaryWorker;
 use crate::services::scanner::ScannerWorker;
 use sqlx::SqlitePool;
 use std::sync::Arc;
@@ -23,6 +24,7 @@ pub struct App {
     pub dispatcher: BotDispatcher,
     pub scanner: ScannerWorker,
     pub deadline_worker: DeadlineWorker,
+    pub summary_worker: SummaryWorker,
     pub scheduler: DeadlineScheduler,
 }
 
@@ -31,12 +33,13 @@ pub struct Running {
     pub shutdown_tx: watch::Sender<bool>,
     pub scanner_handle: JoinHandle<()>,
     pub deadline_handle: JoinHandle<()>,
+    pub summary_handle: JoinHandle<()>,
 }
 
 impl Running {
-    /// Envía la señal de apagado a los workers y espera a que ambos JoinHandles terminen
+    /// Envía la señal de apagado a los workers y espera a que todos los JoinHandles terminen
     /// con un tiempo límite independiente para cada uno.
-    /// Retorna `true` si ambos workers cerraron limpiamente sin timeout ni errores de pánico.
+    /// Retorna `true` si todos los workers cerraron limpiamente sin timeout ni errores de pánico.
     pub async fn shutdown_and_wait(self, timeout_per_worker: Duration) -> bool {
         let _ = self.shutdown_tx.send(true);
         let mut clean = true;
@@ -75,6 +78,23 @@ impl Running {
             }
         }
 
+        match tokio::time::timeout(timeout_per_worker, self.summary_handle).await {
+            Ok(Ok(())) => {
+                tracing::info!("SummaryWorker finalizado exitosamente.");
+            }
+            Ok(Err(panic_err)) => {
+                clean = false;
+                tracing::error!(error = %panic_err, "SummaryWorker terminó con error o pánico");
+            }
+            Err(_) => {
+                clean = false;
+                tracing::warn!(
+                    timeout_secs = timeout_per_worker.as_secs(),
+                    "Timeout esperando que SummaryWorker se detenga"
+                );
+            }
+        }
+
         clean
     }
 }
@@ -92,30 +112,41 @@ pub fn build(pool: SqlitePool, bot: Bot, moodle: MoodleClient, config: Arc<Confi
     )
     .with_scheduler(scheduler.clone());
 
+    let summary_worker = SummaryWorker::new(pool.clone(), bot.clone(), Arc::clone(&config));
+
     let dispatcher = create_dispatcher(bot, pool, moodle, config, Some(scheduler.clone()));
 
     App {
         dispatcher,
         scanner,
         deadline_worker,
+        summary_worker,
         scheduler,
     }
 }
 
-/// Lanza los workers de fondo (scanner y planificador de plazos) en tareas de Tokio
+/// Lanza los workers de fondo (scanner, planificador de plazos y resúmenes diarios) en tareas de Tokio
 /// asociadas a un canal de apagado coordinado.
-pub fn spawn_workers(scanner: ScannerWorker, deadline_worker: DeadlineWorker) -> Running {
+pub fn spawn_workers(
+    scanner: ScannerWorker,
+    deadline_worker: DeadlineWorker,
+    summary_worker: SummaryWorker,
+) -> Running {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let scanner_handle = tokio::spawn(scanner.run_loop(shutdown_rx.clone()));
     let deadline_handle = tokio::spawn(deadline_worker.run_loop(shutdown_rx.clone()));
+    let summary_handle = tokio::spawn(summary_worker.run_loop(shutdown_rx.clone()));
 
-    tracing::info!("Workers de fondo lanzados: scanner y planificador de plazos");
+    tracing::info!(
+        "Workers de fondo lanzados: scanner, planificador de plazos y resúmenes diarios"
+    );
 
     Running {
         shutdown_tx,
         scanner_handle,
         deadline_handle,
+        summary_handle,
     }
 }
 
@@ -145,7 +176,7 @@ pub fn setup_sigterm_handler(dispatcher: &BotDispatcher) {
 impl App {
     /// Lanza los workers de fondo de la aplicación y retorna el dispatcher junto con los handles de ejecución.
     pub fn spawn_workers(self) -> (BotDispatcher, Running) {
-        let running = spawn_workers(self.scanner, self.deadline_worker);
+        let running = spawn_workers(self.scanner, self.deadline_worker, self.summary_worker);
         (self.dispatcher, running)
     }
 }
@@ -192,9 +223,9 @@ mod tests {
         let moodle = MoodleClient::new("http://127.0.0.1:8080");
 
         let app = build(pool, bot, moodle, config);
-        let running = spawn_workers(app.scanner, app.deadline_worker);
+        let running = spawn_workers(app.scanner, app.deadline_worker, app.summary_worker);
 
-        // Apagar y esperar a que ambos workers finalicen de forma limpia
+        // Apagar y esperar a que todos los workers finalicen de forma limpia
         let clean = running.shutdown_and_wait(Duration::from_millis(500)).await;
         assert!(clean, "El apagado de workers debió ser limpio");
     }
@@ -229,11 +260,15 @@ mod tests {
         let deadline_handle = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(10)).await;
         });
+        let summary_handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        });
 
         let running = Running {
             shutdown_tx,
             scanner_handle,
             deadline_handle,
+            summary_handle,
         };
 
         let clean = running.shutdown_and_wait(Duration::from_millis(50)).await;
@@ -315,7 +350,7 @@ mod tests {
 
         let app = build(pool, bot, moodle, config);
         let mut dispatcher = app.dispatcher;
-        let running = spawn_workers(app.scanner, app.deadline_worker);
+        let running = spawn_workers(app.scanner, app.deadline_worker, app.summary_worker);
 
         let shutdown_token = dispatcher.shutdown_token();
         tokio::spawn(async move {
