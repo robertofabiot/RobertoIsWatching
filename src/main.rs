@@ -57,7 +57,7 @@ async fn main() {
     );
     dispatcher.dispatch().await;
 
-    let clean = running.shutdown_and_wait(Duration::from_secs(10)).await;
+    let clean = running.shutdown_and_wait(Duration::from_secs(15)).await;
 
     if clean {
         tracing::info!("Apagado limpio completado. Hasta pronto.");

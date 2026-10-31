@@ -218,7 +218,7 @@ mod tests {
     fn valid_env() -> HashMap<&'static str, &'static str> {
         let mut map = HashMap::new();
         map.insert("TELEGRAM_BOT_TOKEN", "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ");
-        map.insert("ADMIN_CHAT_ID", "1125347763");
+        map.insert("ADMIN_CHAT_ID", "123456789");
         map.insert("DATABASE_URL", "sqlite://robertos_watching.db?mode=rwc");
         map.insert("BOT_TZ", "America/Managua");
         map
@@ -229,7 +229,7 @@ mod tests {
         let env = valid_env();
         let config = Config::from_iter(env).expect("Configuración válida falló");
         assert_eq!(config.bot_token, "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ");
-        assert_eq!(config.admin_chat_id, 1125347763);
+        assert_eq!(config.admin_chat_id, 123456789);
         assert_eq!(
             config.database_url,
             "sqlite://robertos_watching.db?mode=rwc"

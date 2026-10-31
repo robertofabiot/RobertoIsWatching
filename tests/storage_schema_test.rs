@@ -12,7 +12,7 @@ async fn test_pragmas_and_schema_are_applied() {
 
     let config = Config {
         bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-        admin_chat_id: 1125347763,
+        admin_chat_id: 123456789,
         database_url: database_url.clone(),
         max_users_default: 350,
         bot_tz: chrono_tz::America::Managua,

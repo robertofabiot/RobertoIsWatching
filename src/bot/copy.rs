@@ -53,6 +53,9 @@ pub const UAM_MAINTENANCE: &str =
 pub const UAM_RECOVERED: &str =
     "✅ <b>UAM Virtual recuperado.</b> El servicio vuelve a responder con normalidad.";
 
+pub const MOODLE_COMMUNICATION_ERROR: &str =
+    "⚠️ No fue posible comunicarse con Moodle en este momento. Por favor intenta de nuevo más tarde.";
+
 // --- COMANDO /sync ---
 pub const SYNC_SCANNING: &str =
     "👁️ <b>Roberto's watching the Moodle servers...</b> buscando cambios.";

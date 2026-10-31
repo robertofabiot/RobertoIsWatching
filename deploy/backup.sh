@@ -90,6 +90,7 @@ fi
 
 chmod 600 "$TEMP_BACKUP"
 mv "$TEMP_BACKUP" "$BACKUP_FILE"
+chmod 600 "$BACKUP_FILE"
 trap - EXIT INT TERM
 
 if [[ "$(id -u)" -eq 0 ]] && id -u robertos >/dev/null 2>&1; then

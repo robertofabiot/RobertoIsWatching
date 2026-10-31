@@ -58,28 +58,30 @@ impl MoodleClient {
             service: "moodle_mobile_app",
         };
 
-        // Adquirir permiso de gate con prioridad interactiva
-        let _permit = self.gate().acquire(Priority::Interactive).await?;
+        // Adquirir permiso de gate con prioridad interactiva y liberarlo antes de get_site_info (R-01)
+        let (status, body_text) = {
+            let _permit = self.gate().acquire(Priority::Interactive).await?;
+            self.counters().inc(Priority::Interactive);
+            let res = self.http().post(&token_url).form(&login_body).send().await;
 
-        self.counters().inc(Priority::Interactive);
-        let res = self.http().post(&token_url).form(&login_body).send().await;
+            // Sobrescribir inmediatamente la contraseña en memoria (RF-01, A-09)
+            pass.zeroize();
 
-        // Sobrescribir inmediatamente la contraseña en memoria (RF-01, A-09)
-        pass.zeroize();
-
-        let response = match res {
-            Ok(resp) => resp,
-            Err(err) => {
-                let moodle_err = MoodleError::from(err);
-                if moodle_err.is_transient() {
-                    self.breaker().record_failure();
+            let response = match res {
+                Ok(resp) => resp,
+                Err(err) => {
+                    let moodle_err = MoodleError::from(err);
+                    if moodle_err.is_transient() {
+                        self.breaker().record_failure();
+                    }
+                    return Err(moodle_err);
                 }
-                return Err(moodle_err);
-            }
-        };
+            };
 
-        let status = response.status();
-        let body_text = response.text().await.map_err(MoodleError::from)?;
+            let status = response.status();
+            let body_text = response.text().await.map_err(MoodleError::from)?;
+            (status, body_text)
+        };
 
         if status.as_u16() == 503 || status.is_server_error() {
             self.breaker().record_failure();
@@ -93,14 +95,21 @@ impl MoodleClient {
             MoodleError::Protocol("Respuesta de token.php no contiene token".into())
         })?;
 
-        // 2da llamada: obtener site_info para extraer userid y fullname
+        // 2da llamada: obtener site_info para extraer userid y fullname.
+        // El permiso previo ya fue liberado para evitar deadlock con concurrencia restringida (R-01).
         let site_info = self.get_site_info(&wstoken, Priority::Interactive).await?;
 
+        // R-15: Evitar loguear fullname (PII) en nivel info
         tracing::info!(
             cif = %cif,
             userid = site_info.userid,
-            fullname = %site_info.fullname,
             "Autenticación exitosa en Moodle"
+        );
+        tracing::debug!(
+            cif = %cif,
+            userid = site_info.userid,
+            fullname = %site_info.fullname,
+            "Detalles de sesión autenticada en Moodle"
         );
 
         Ok(LoginInfo {

@@ -14,7 +14,7 @@ async fn setup_test_db(name: &str) -> (SqlitePool, std::path::PathBuf) {
 
     let config = Config {
         bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-        admin_chat_id: 1125347763,
+        admin_chat_id: 123456789,
         database_url,
         max_users_default: 300,
         bot_tz: chrono_tz::America::Managua,
@@ -544,6 +544,183 @@ async fn test_users_due_for_summary_selection() {
     let ids0: Vec<i64> = due_sun_0.iter().map(|u| u.chat_id).collect();
     assert!(ids0.contains(&7002));
     assert!(ids0.contains(&7003));
+
+    cleanup_test_db(pool, db_path);
+}
+
+#[tokio::test]
+async fn test_try_admit_cif_change_in_same_chat_purges_previous_data_and_alerts() {
+    let (pool, db_path) = setup_test_db("cif_change").await;
+    let chat_id = 999111;
+
+    // 1. Admitir estudiante original (CIF 21010001)
+    let adm1 = UsersRepository::try_admit(
+        &pool,
+        chat_id,
+        "21010001",
+        101,
+        "Estudiante Original",
+        "tok_orig",
+    )
+    .await
+    .expect("Fallo al admitir usuario original");
+    assert!(matches!(adm1, AdmissionResult::Admitted(_)));
+
+    // Vincular curso, registrar una entrega y una alerta previa
+    CoursesRepository::upsert_course(&pool, 301, "Física I", Some("FIS101"))
+        .await
+        .unwrap();
+    CoursesRepository::link_user(&pool, chat_id, 301)
+        .await
+        .unwrap();
+    AssignmentsRepository::upsert(&pool, 401, Some(901), 301, "Lab 1", Some(1700000000), None)
+        .await
+        .unwrap();
+    SubmissionsRepository::upsert(
+        &pool,
+        SubmissionData {
+            chat_id,
+            assignment_id: 401,
+            status: Some("submitted"),
+            graded: true,
+            grade: Some("95"),
+            feedback: Some("Excelente"),
+            due_override: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    AlertsRepository::try_claim(&pool, "assignment:401", "assignment", Some(chat_id))
+        .await
+        .unwrap();
+
+    // Comprobar que existen cursos, entregas y alertas para este chat_id
+    let courses = CoursesRepository::courses_for_user(&pool, chat_id)
+        .await
+        .unwrap();
+    assert_eq!(courses.len(), 1);
+    let sub = SubmissionsRepository::get(&pool, chat_id, 401)
+        .await
+        .unwrap();
+    assert!(sub.is_some());
+    assert!(AlertsRepository::is_claimed(&pool, "assignment:401")
+        .await
+        .unwrap());
+
+    // 2. Mismo chat hace login con OTRO CIF (22020002, otro user_id 202) -> R-03
+    let adm2 = UsersRepository::try_admit(
+        &pool,
+        chat_id,
+        "22020002",
+        202,
+        "Nuevo Estudiante",
+        "tok_new",
+    )
+    .await
+    .expect("Fallo en re-login con nuevo CIF");
+
+    match adm2 {
+        AdmissionResult::AlreadyMember(user) => {
+            assert_eq!(user.chat_id, chat_id);
+            assert_eq!(user.uam_cif, "22020002");
+            assert_eq!(user.uam_user_id, 202);
+            assert_eq!(user.fullname, "Nuevo Estudiante");
+        }
+        _ => panic!("Esperaba AlreadyMember tras cambio de CIF en mismo chat"),
+    }
+
+    // 3. Verificar que los datos del alumno anterior fueron eliminados en cascada
+    let courses_after = CoursesRepository::courses_for_user(&pool, chat_id)
+        .await
+        .unwrap();
+    assert!(
+        courses_after.is_empty(),
+        "Los cursos del CIF anterior no se borraron"
+    );
+    let sub_after = SubmissionsRepository::get(&pool, chat_id, 401)
+        .await
+        .unwrap();
+    assert!(
+        sub_after.is_none(),
+        "Las entregas del CIF anterior no se borraron"
+    );
+
+    // 4. Verificar que sent_alerts fue purgado para este chat
+    assert!(
+        !AlertsRepository::is_claimed(&pool, "assignment:401")
+            .await
+            .unwrap(),
+        "sent_alerts del chat previo no fue purgado"
+    );
+
+    cleanup_test_db(pool, db_path);
+}
+
+#[tokio::test]
+async fn test_inactive_users_do_not_consume_quota() {
+    let (pool, db_path) = setup_test_db("quota_active").await;
+
+    // Fijar cupo máximo en 1
+    SettingsRepository::set(&pool, "max_users", "1")
+        .await
+        .unwrap();
+
+    // 1. Admitir primer usuario activo
+    let adm1 = UsersRepository::try_admit(&pool, 8001, "CIF_8001", 801, "Usuario Uno", "tok_1")
+        .await
+        .unwrap();
+    assert!(matches!(adm1, AdmissionResult::Admitted(_)));
+
+    // Segundo usuario debe ser rechazado por cupo lleno (1/1)
+    let adm2 = UsersRepository::try_admit(&pool, 8002, "CIF_8002", 802, "Usuario Dos", "tok_2")
+        .await
+        .unwrap();
+    assert!(matches!(adm2, AdmissionResult::Full));
+
+    // 2. Marcar al primer usuario como inactivo (ej. bloqueo de bot o token expirado)
+    UsersRepository::mark_inactive(&pool, 8001, "bot_blocked")
+        .await
+        .unwrap();
+
+    // 3. Con R-06, el conteo sólo incluye usuarios activos (WHERE is_active = 1),
+    // por lo que el segundo usuario ahora sí debe ser admitido
+    let adm3 = UsersRepository::try_admit(&pool, 8002, "CIF_8002", 802, "Usuario Dos", "tok_2")
+        .await
+        .unwrap();
+    assert!(
+        matches!(adm3, AdmissionResult::Admitted(_)),
+        "Usuario no fue admitido a pesar de que el único usuario anterior está inactivo"
+    );
+
+    // 4. Si el usuario 1 (inactivo) intenta re-login mientras el cupo activo está lleno (1/1 ocupado por Usuario 2),
+    // debe ser rechazado con Full para no inflar los cupos activos más allá del límite
+    let adm4 = UsersRepository::try_admit(&pool, 8001, "CIF_8001", 801, "Usuario Uno", "tok_1_new")
+        .await
+        .unwrap();
+    assert!(
+        matches!(adm4, AdmissionResult::Full),
+        "Usuario inactivo no debe poder reactivarse si el cupo activo está lleno"
+    );
+
+    // 5. Al marcar inactivo al usuario 2, el usuario 1 sí debe poder reactivarse
+    UsersRepository::mark_inactive(&pool, 8002, "bot_blocked")
+        .await
+        .unwrap();
+    let adm5 = UsersRepository::try_admit(
+        &pool,
+        8001,
+        "CIF_8001",
+        801,
+        "Usuario Uno",
+        "tok_1_reactivated",
+    )
+    .await
+    .unwrap();
+    assert!(
+        matches!(adm5, AdmissionResult::AlreadyMember(_)),
+        "Usuario inactivo debe poder reactivarse una vez liberado un cupo activo"
+    );
 
     cleanup_test_db(pool, db_path);
 }

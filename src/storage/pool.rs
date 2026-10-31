@@ -23,7 +23,7 @@ pub async fn build_pool(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
         .idle_timeout(None)
         .max_lifetime(None)
         .test_before_acquire(false)
-        .acquire_timeout(Duration::from_secs(3600 * 24))
+        .acquire_timeout(Duration::from_secs(15))
         .connect_with(options)
         .await
 }

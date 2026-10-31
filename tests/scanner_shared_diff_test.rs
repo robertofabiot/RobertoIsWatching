@@ -15,7 +15,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn create_test_config(database_url: String) -> Config {
     Config {
         bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-        admin_chat_id: 1125347763,
+        admin_chat_id: 123456789,
         database_url,
         max_users_default: 300,
         bot_tz: chrono_tz::America::Managua,
@@ -267,4 +267,196 @@ async fn test_scanner_e2e_failover_baseline_diff_and_tiers() {
     // La entrega de la tarea 502 fue persistida
     let sub502_after = SubmissionsRepository::get(&pool, 2002, 502).await.unwrap();
     assert!(sub502_after.is_some());
+}
+
+#[tokio::test]
+async fn test_sync_does_not_silence_scanner_alerts_for_other_students() {
+    let moodle_server = MockServer::start().await;
+    let telegram_server = MockServer::start().await;
+
+    // 1. Mock de Telegram SendMessage
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ok": true,
+            "result": {
+                "message_id": 99,
+                "date": 1700000000,
+                "chat": { "id": 3002, "type": "private" },
+                "text": "alerta"
+            }
+        })))
+        .mount(&telegram_server)
+        .await;
+
+    // 2. Mocks iniciales de Moodle
+    let courses_json = serde_json::json!([
+        {
+            "id": 701,
+            "shortname": "PROG701",
+            "fullname": "Programación Concurrente",
+            "displayname": "Programación Concurrente",
+            "visible": 1,
+            "enddate": 0,
+            "completed": false,
+            "hidden": false
+        }
+    ]);
+
+    // Inicialmente no hay tareas ni módulos
+    let empty_assignments = serde_json::json!({
+        "courses": [{
+            "id": 701,
+            "assignments": []
+        }]
+    });
+
+    let new_assignment_json = serde_json::json!({
+        "courses": [{
+            "id": 701,
+            "assignments": [
+                {
+                    "id": 801,
+                    "cmid": 8001,
+                    "course": 701,
+                    "name": "Proyecto Final Rust",
+                    "duedate": chrono::Utc::now().timestamp() + 86400 * 5,
+                    "allowsubmissionsfromdate": 0,
+                    "cutoffdate": 0,
+                    "timemodified": 0
+                }
+            ]
+        }]
+    });
+
+    let submission_json = serde_json::json!({
+        "lastattempt": {
+            "submission": { "status": "new" },
+            "graded": false,
+            "gradingstatus": "notgraded"
+        },
+        "feedback": null
+    });
+
+    let empty_contents = serde_json::json!([]);
+
+    let has_new_assign = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let has_new_assign_c = has_new_assign.clone();
+
+    Mock::given(method("POST"))
+        .and(path("/webservice/rest/server.php"))
+        .respond_with(move |req: &wiremock::Request| {
+            let body_str = std::str::from_utf8(&req.body).unwrap_or("");
+            if body_str.contains("core_enrol_get_users_courses") {
+                ResponseTemplate::new(200).set_body_json(&courses_json)
+            } else if body_str.contains("mod_assign_get_assignments") {
+                if has_new_assign_c.load(std::sync::atomic::Ordering::SeqCst) {
+                    ResponseTemplate::new(200).set_body_json(&new_assignment_json)
+                } else {
+                    ResponseTemplate::new(200).set_body_json(&empty_assignments)
+                }
+            } else if body_str.contains("mod_assign_get_submission_status") {
+                ResponseTemplate::new(200).set_body_json(&submission_json)
+            } else if body_str.contains("core_course_get_contents") {
+                ResponseTemplate::new(200).set_body_json(&empty_contents)
+            } else {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({}))
+            }
+        })
+        .mount(&moodle_server)
+        .await;
+
+    let rand_id: u64 = rand::random();
+    let db_path = std::env::temp_dir().join(format!("test_r02_shared_{rand_id}.db"));
+    let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+    let config = Arc::new(create_test_config(database_url));
+    let pool = robertos_watching_bot::storage::init(&config).await.unwrap();
+    let bot = create_bot_with_url(
+        &config.bot_token,
+        reqwest::Url::parse(&format!("{}/", telegram_server.uri())).unwrap(),
+    );
+    let moodle = MoodleClient::from_builder(
+        robertos_watching_bot::moodle::MoodleClientBuilder::new()
+            .base_url(moodle_server.uri())
+            .gate(robertos_watching_bot::moodle::MoodleGate::new(4, 3).without_jitter())
+            .max_retries(0),
+    );
+
+    // 3. Crear Curso 701 y alumnos A (3001) y B (3002) inscritos en el curso
+    CoursesRepository::upsert_course(&pool, 701, "Programación Concurrente", Some("PROG701"))
+        .await
+        .unwrap();
+
+    UsersRepository::upsert_login(&pool, 3001, "22013001", 301, "Alumno A", "tok_a")
+        .await
+        .unwrap();
+    CoursesRepository::link_user(&pool, 3001, 701)
+        .await
+        .unwrap();
+
+    UsersRepository::upsert_login(&pool, 3002, "22013002", 302, "Alumno B", "tok_b")
+        .await
+        .unwrap();
+    CoursesRepository::link_user(&pool, 3002, 701)
+        .await
+        .unwrap();
+
+    let worker = ScannerWorker::new(pool.clone(), moodle.clone(), bot, config.clone());
+
+    // 4. Ciclo inicial del scanner: establece la línea base del curso 701
+    let baseline_summary = worker.run_scan_cycle().await.unwrap();
+    assert_eq!(baseline_summary.courses_scanned, 1);
+    assert_eq!(baseline_summary.alerts_dispatched, 0);
+
+    let course_record = CoursesRepository::get(&pool, 701).await.unwrap().unwrap();
+    assert!(
+        course_record.last_scanned.is_some(),
+        "El ciclo del scanner debe establecer la línea base (last_scanned NOT NULL)"
+    );
+
+    // 5. El docente publica una nueva tarea en Moodle
+    has_new_assign.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // 6. Alumno A ejecuta /sync (refresh_user) antes de que corra el siguiente escaneo periódico
+    let _sync_summary = robertos_watching_bot::services::sync::refresh_user(
+        &pool,
+        &moodle,
+        3001,
+        robertos_watching_bot::moodle::gate::Priority::Interactive,
+    )
+    .await
+    .expect("Fallo al ejecutar /sync para Alumno A");
+
+    // Con el fix R-02, refresh_user NO debe consumir silenciosamente la nueva tarea en la BD
+    // para evitar silenciar la alerta de los demás compañeros del curso
+    let assign_in_db = AssignmentsRepository::get(&pool, 801).await.unwrap();
+    assert!(
+        assign_in_db.is_none(),
+        "R-02: /sync no debe haber insertado la nueva tarea en la tabla compartida"
+    );
+
+    // 7. Corre el siguiente ciclo del scanner periódico
+    let scan_summary = worker.run_scan_cycle().await.unwrap();
+    assert_eq!(scan_summary.courses_scanned, 1);
+    assert_eq!(
+        scan_summary.new_assignments, 1,
+        "El scanner debe detectar la nueva tarea como Inserted"
+    );
+    assert!(
+        scan_summary.alerts_dispatched >= 1,
+        "El scanner debe haber despachado alertas de nueva tarea"
+    );
+
+    // 8. Verificar que el Alumno B recibió su alerta en Telegram (R-02)
+    let alert_b_claimed =
+        robertos_watching_bot::storage::AlertsRepository::is_claimed(&pool, "new_assign:3002:801")
+            .await
+            .unwrap();
+    assert!(
+        alert_b_claimed,
+        "R-02: El Alumno B debió recibir la alerta de la nueva tarea a pesar de que Alumno A hizo /sync antes"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
 }

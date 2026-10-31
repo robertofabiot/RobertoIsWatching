@@ -38,59 +38,58 @@ pub struct Running {
 
 impl Running {
     /// Envía la señal de apagado a los workers y espera a que todos los JoinHandles terminen
-    /// con un tiempo límite independiente para cada uno.
+    /// bajo un único tiempo límite global concurrente (R-09).
     /// Retorna `true` si todos los workers cerraron limpiamente sin timeout ni errores de pánico.
-    pub async fn shutdown_and_wait(self, timeout_per_worker: Duration) -> bool {
+    pub async fn shutdown_and_wait(self, timeout: Duration) -> bool {
         let _ = self.shutdown_tx.send(true);
         let mut clean = true;
 
-        match tokio::time::timeout(timeout_per_worker, self.scanner_handle).await {
-            Ok(Ok(())) => {
-                tracing::info!("ScannerWorker finalizado exitosamente.");
-            }
-            Ok(Err(panic_err)) => {
-                clean = false;
-                tracing::error!(error = %panic_err, "ScannerWorker terminó con error o pánico");
-            }
-            Err(_) => {
-                clean = false;
-                tracing::warn!(
-                    timeout_secs = timeout_per_worker.as_secs(),
-                    "Timeout esperando que ScannerWorker se detenga"
-                );
-            }
-        }
+        let join_result = tokio::time::timeout(timeout, async {
+            tokio::join!(
+                self.scanner_handle,
+                self.deadline_handle,
+                self.summary_handle
+            )
+        })
+        .await;
 
-        match tokio::time::timeout(timeout_per_worker, self.deadline_handle).await {
-            Ok(Ok(())) => {
-                tracing::info!("DeadlineWorker finalizado exitosamente.");
-            }
-            Ok(Err(panic_err)) => {
-                clean = false;
-                tracing::error!(error = %panic_err, "DeadlineWorker terminó con error o pánico");
-            }
-            Err(_) => {
-                clean = false;
-                tracing::warn!(
-                    timeout_secs = timeout_per_worker.as_secs(),
-                    "Timeout esperando que DeadlineWorker se detenga"
-                );
-            }
-        }
+        match join_result {
+            Ok((scanner_res, deadline_res, summary_res)) => {
+                match scanner_res {
+                    Ok(()) => {
+                        tracing::info!("ScannerWorker finalizado exitosamente.");
+                    }
+                    Err(panic_err) => {
+                        clean = false;
+                        tracing::error!(error = %panic_err, "ScannerWorker terminó con error o pánico");
+                    }
+                }
 
-        match tokio::time::timeout(timeout_per_worker, self.summary_handle).await {
-            Ok(Ok(())) => {
-                tracing::info!("SummaryWorker finalizado exitosamente.");
-            }
-            Ok(Err(panic_err)) => {
-                clean = false;
-                tracing::error!(error = %panic_err, "SummaryWorker terminó con error o pánico");
+                match deadline_res {
+                    Ok(()) => {
+                        tracing::info!("DeadlineWorker finalizado exitosamente.");
+                    }
+                    Err(panic_err) => {
+                        clean = false;
+                        tracing::error!(error = %panic_err, "DeadlineWorker terminó con error o pánico");
+                    }
+                }
+
+                match summary_res {
+                    Ok(()) => {
+                        tracing::info!("SummaryWorker finalizado exitosamente.");
+                    }
+                    Err(panic_err) => {
+                        clean = false;
+                        tracing::error!(error = %panic_err, "SummaryWorker terminó con error o pánico");
+                    }
+                }
             }
             Err(_) => {
                 clean = false;
                 tracing::warn!(
-                    timeout_secs = timeout_per_worker.as_secs(),
-                    "Timeout esperando que SummaryWorker se detenga"
+                    timeout_secs = timeout.as_secs(),
+                    "Timeout esperando que los workers de fondo se detengan"
                 );
             }
         }
@@ -189,7 +188,7 @@ mod tests {
     async fn test_app_build_assembles_components() {
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url: "sqlite::memory:".to_string(),
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -210,7 +209,7 @@ mod tests {
     async fn test_spawn_workers_and_shutdown() {
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url: "sqlite::memory:".to_string(),
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -234,7 +233,7 @@ mod tests {
     async fn test_setup_sigterm_handler_does_not_panic() {
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url: "sqlite::memory:".to_string(),
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -333,7 +332,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url: "sqlite::memory:".to_string(),
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,

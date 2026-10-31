@@ -12,7 +12,31 @@ use std::sync::Arc;
 use std::time::Duration;
 use teloxide::prelude::*;
 use teloxide::types::ParseMode;
+use teloxide::{ApiError, RequestError};
 use tokio::sync::watch;
+
+/// Elemento encolado para reintento de resumen diario tras fallo transitorio (R-11).
+#[derive(Debug, Clone)]
+struct SummaryRetryItem {
+    chat_id: i64,
+    date_ymd: String,
+    time_hhmm: String,
+    attempts: u32,
+}
+
+/// Clasifica si un error de envío corresponde a bloqueo o baja del usuario en Telegram (R-10).
+fn is_telegram_blocked_error(err: &anyhow::Error) -> bool {
+    if let Some(RequestError::Api(
+        ApiError::BotBlocked | ApiError::UserDeactivated | ApiError::ChatNotFound,
+    )) = err.downcast_ref::<RequestError>()
+    {
+        return true;
+    }
+    let err_lower = err.to_string().to_lowercase();
+    err_lower.contains("bot was blocked by the user")
+        || err_lower.contains("user is deactivated")
+        || err_lower.contains("chat not found")
+}
 
 /// Calcula la duración restante hasta el siguiente límite de minuto (:00.000)
 /// sumando un margen de 20ms para garantizar que el reloj ha cruzado el minuto.
@@ -32,12 +56,20 @@ pub struct SummaryWorker {
     pool: SqlitePool,
     bot: Bot,
     config: Arc<Config>,
+    last_evaluated_minute: Arc<tokio::sync::Mutex<Option<DateTime<Tz>>>>,
+    retry_queue: Arc<tokio::sync::Mutex<Vec<SummaryRetryItem>>>,
 }
 
 impl SummaryWorker {
     /// Construye una nueva instancia de `SummaryWorker`.
     pub fn new(pool: SqlitePool, bot: Bot, config: Arc<Config>) -> Self {
-        Self { pool, bot, config }
+        Self {
+            pool,
+            bot,
+            config,
+            last_evaluated_minute: Arc::new(tokio::sync::Mutex::new(None)),
+            retry_queue: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        }
     }
 
     /// Referencia al pool de conexiones de la base de datos.
@@ -78,7 +110,7 @@ impl SummaryWorker {
                 _ = tokio::time::sleep(sleep_duration) => {
                     let tick_time = Utc::now().with_timezone(&self.config.bot_tz);
                     tracing::debug!(tick = %tick_time, "SummaryWorker tick de minuto alcanzado");
-                    self.evaluate_minute(&tick_time).await;
+                    self.evaluate_minute_with_shutdown(&tick_time, Some(&shutdown_rx)).await;
                 }
             }
         }
@@ -130,7 +162,74 @@ impl SummaryWorker {
 
     /// Evalúa el tick de un minuto específico seleccionando los usuarios correspondientes y enviando sus resúmenes
     /// bajo el patrón atómico de idempotencia claim -> send -> release-on-fail.
+    /// Evalúa el rango [last_evaluated_minute + 1, dt] para evitar saltar minutos si hubo atraso (R-11).
     pub async fn evaluate_minute(&self, dt: &DateTime<Tz>) {
+        self.evaluate_minute_with_shutdown(dt, None).await;
+    }
+
+    /// Evalúa el minuto u rango de minutos observando la señal de shutdown y procesando reintentos (R-11).
+    pub async fn evaluate_minute_with_shutdown(
+        &self,
+        dt: &DateTime<Tz>,
+        shutdown_rx: Option<&watch::Receiver<bool>>,
+    ) {
+        // 1. Procesar reintentos encolados por errores transitorios (R-11)
+        self.process_retries(shutdown_rx).await;
+
+        if let Some(rx) = shutdown_rx {
+            if *rx.borrow() {
+                return;
+            }
+        }
+
+        // 2. Determinar rango a evaluar [last + 1, dt] (R-11)
+        let minutes: Vec<DateTime<Tz>> = {
+            let mut last_guard = self.last_evaluated_minute.lock().await;
+            let dt_floored = dt
+                .with_second(0)
+                .and_then(|t| t.with_nanosecond(0))
+                .unwrap_or(*dt);
+            match *last_guard {
+                None => {
+                    *last_guard = Some(dt_floored);
+                    vec![dt_floored]
+                }
+                Some(last) => {
+                    if dt_floored > last {
+                        let start = (last + chrono::Duration::minutes(1))
+                            .max(dt_floored - chrono::Duration::minutes(15));
+                        let mut current = start;
+                        let mut v = Vec::new();
+                        while current <= dt_floored {
+                            v.push(current);
+                            current += chrono::Duration::minutes(1);
+                        }
+                        *last_guard = Some(dt_floored);
+                        v
+                    } else {
+                        vec![dt_floored]
+                    }
+                }
+            }
+        };
+
+        // 3. Evaluar cada minuto en la secuencia
+        for m in minutes {
+            if let Some(rx) = shutdown_rx {
+                if *rx.borrow() {
+                    break;
+                }
+            }
+            self.evaluate_single_minute(&m, shutdown_rx).await;
+        }
+    }
+
+    /// Evalúa un minuto individual despachando a los usuarios programados (R-11).
+    async fn evaluate_single_minute(
+        &self,
+        dt: &DateTime<Tz>,
+        shutdown_rx: Option<&watch::Receiver<bool>>,
+    ) {
         let time_hhmm = dt.format("%H:%M").to_string();
         let weekday_iso = dt.weekday().number_from_monday();
         let date_ymd = dt.format("%Y-%m-%d").to_string();
@@ -157,12 +256,34 @@ impl SummaryWorker {
             };
 
         for user in users {
+            if let Some(rx) = shutdown_rx {
+                if *rx.borrow() {
+                    tracing::info!("SummaryWorker: interrumpiendo envío por shutdown");
+                    break;
+                }
+            }
+
             let key = format!("summary:{}:{}:{}", user.chat_id, date_ymd, time_hhmm);
 
             match AlertsRepository::try_claim(&self.pool, &key, "summary", Some(user.chat_id)).await
             {
                 Ok(true) => {
-                    let send_res = self.dispatch_summary_to_user(user.chat_id).await;
+                    let (was_shutdown, send_res) = if let Some(rx) = shutdown_rx {
+                        let mut rx_clone = rx.clone();
+                        tokio::select! {
+                            _ = rx_clone.changed() => (true, Err(anyhow::anyhow!("Shutdown"))),
+                            res = self.dispatch_summary_to_user(user.chat_id) => (false, res),
+                        }
+                    } else {
+                        (false, self.dispatch_summary_to_user(user.chat_id).await)
+                    };
+
+                    if was_shutdown {
+                        tracing::info!("SummaryWorker: interrumpiendo envío por señal de shutdown");
+                        let _ = AlertsRepository::release(&self.pool, &key).await;
+                        break;
+                    }
+
                     match send_res {
                         Ok(()) => {
                             tracing::info!(
@@ -178,11 +299,7 @@ impl SummaryWorker {
                                 error = %err,
                                 "Error al enviar resumen diario por Telegram"
                             );
-                            let err_lower = err.to_string().to_lowercase();
-                            if err_lower.contains("bot was blocked by the user")
-                                || err_lower.contains("user is deactivated")
-                                || err_lower.contains("chat not found")
-                            {
+                            if is_telegram_blocked_error(&err) {
                                 tracing::warn!(
                                     chat_id = user.chat_id,
                                     "Usuario bloqueó el bot o cuenta desactivada. Marcando inactivo."
@@ -194,8 +311,15 @@ impl SummaryWorker {
                                 )
                                 .await;
                             } else {
-                                // Error transitorio de red: liberar el claim para permitir reintento
+                                // Error transitorio de red: liberar el claim y encolar reintento (R-11)
                                 let _ = AlertsRepository::release(&self.pool, &key).await;
+                                let mut q = self.retry_queue.lock().await;
+                                q.push(SummaryRetryItem {
+                                    chat_id: user.chat_id,
+                                    date_ymd: date_ymd.clone(),
+                                    time_hhmm: time_hhmm.clone(),
+                                    attempts: 1,
+                                });
                             }
                         }
                     }
@@ -216,6 +340,107 @@ impl SummaryWorker {
                     );
                 }
             }
+        }
+    }
+
+    /// Procesa reintentos encolados por fallos transitorios (R-11).
+    async fn process_retries(&self, shutdown_rx: Option<&watch::Receiver<bool>>) {
+        let retries = {
+            let mut q = self.retry_queue.lock().await;
+            std::mem::take(&mut *q)
+        };
+        if retries.is_empty() {
+            return;
+        }
+
+        let mut next_retries = Vec::new();
+        for mut item in retries {
+            if let Some(rx) = shutdown_rx {
+                if *rx.borrow() {
+                    next_retries.push(item);
+                    break;
+                }
+            }
+
+            let key = format!(
+                "summary:{}:{}:{}",
+                item.chat_id, item.date_ymd, item.time_hhmm
+            );
+
+            match AlertsRepository::try_claim(&self.pool, &key, "summary", Some(item.chat_id)).await
+            {
+                Ok(true) => {
+                    let (was_shutdown, res) = if let Some(rx) = shutdown_rx {
+                        let mut rx_clone = rx.clone();
+                        tokio::select! {
+                            _ = rx_clone.changed() => (true, Err(anyhow::anyhow!("Shutdown"))),
+                            res = self.dispatch_summary_to_user(item.chat_id) => (false, res),
+                        }
+                    } else {
+                        (false, self.dispatch_summary_to_user(item.chat_id).await)
+                    };
+
+                    if was_shutdown {
+                        let _ = AlertsRepository::release(&self.pool, &key).await;
+                        next_retries.push(item);
+                        break;
+                    }
+
+                    match res {
+                        Ok(()) => {
+                            tracing::info!(
+                                chat_id = item.chat_id,
+                                key = %key,
+                                "Resumen diario (reintento) despachado exitosamente"
+                            );
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                chat_id = item.chat_id,
+                                key = %key,
+                                error = %err,
+                                "Error en reintento de resumen diario"
+                            );
+                            if is_telegram_blocked_error(&err) {
+                                let _ = UsersRepository::mark_inactive(
+                                    &self.pool,
+                                    item.chat_id,
+                                    "bot_blocked",
+                                )
+                                .await;
+                            } else {
+                                let _ = AlertsRepository::release(&self.pool, &key).await;
+                                item.attempts += 1;
+                                if item.attempts < 3 {
+                                    next_retries.push(item);
+                                } else {
+                                    tracing::warn!(
+                                        chat_id = item.chat_id,
+                                        key = %key,
+                                        "Resumen diario descartado tras agotar reintentos"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(false) => {
+                    // Ya reclamado o enviado
+                }
+                Err(e) => {
+                    tracing::error!(
+                        chat_id = item.chat_id,
+                        error = %e,
+                        "Error al reclamar clave en reintento de resumen"
+                    );
+                    next_retries.push(item);
+                }
+            }
+        }
+
+        if !next_retries.is_empty() {
+            let mut q = self.retry_queue.lock().await;
+            q.extend(next_retries);
         }
     }
 }
@@ -287,7 +512,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -340,7 +565,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -411,7 +636,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -444,6 +669,185 @@ mod tests {
         let updated_user = UsersRepository::get(&pool, 7777).await.unwrap().unwrap();
         assert!(!updated_user.is_active);
         assert_eq!(updated_user.inactive_reason.as_deref(), Some("bot_blocked"));
+
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_minute_range_when_tick_delayed() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {
+                    "message_id": 103,
+                    "date": 1700000000,
+                    "chat": { "id": 8801, "type": "private" },
+                    "text": "test"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_summary_range_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 123456789,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", server.uri())).unwrap(),
+        );
+
+        // Alumno 1: 07:31
+        let u1 =
+            UsersRepository::upsert_login(&pool, 8801, "CIF_8801", 1, "Estudiante 8801", "tok")
+                .await
+                .unwrap();
+        UsersRepository::update_summary_config(&pool, u1.chat_id, true, r#"["07:31"]"#, r#"[5]"#)
+            .await
+            .unwrap();
+
+        // Alumno 2: 07:32
+        let u2 =
+            UsersRepository::upsert_login(&pool, 8802, "CIF_8802", 2, "Estudiante 8802", "tok")
+                .await
+                .unwrap();
+        UsersRepository::update_summary_config(&pool, u2.chat_id, true, r#"["07:32"]"#, r#"[5]"#)
+            .await
+            .unwrap();
+
+        let worker = SummaryWorker::new(pool.clone(), bot, config.clone());
+
+        // Primer tick a las 07:30 (inicializa last_evaluated_minute = 07:30)
+        let dt_0730 = config
+            .bot_tz
+            .with_ymd_and_hms(2026, 10, 30, 7, 30, 0)
+            .unwrap();
+        worker.evaluate_minute(&dt_0730).await;
+
+        // Tick demorado despierta directamente a las 07:32 (se saltó el tick de 07:31)
+        let dt_0732 = config
+            .bot_tz
+            .with_ymd_and_hms(2026, 10, 30, 7, 32, 0)
+            .unwrap();
+        worker.evaluate_minute(&dt_0732).await;
+
+        // Ambas claves debieron ser reclamadas porque se evaluó el rango [07:31, 07:32]
+        let key1 = "summary:8801:2026-10-30:07:31";
+        let key2 = "summary:8802:2026-10-30:07:32";
+        assert!(
+            AlertsRepository::is_claimed(&pool, key1).await.unwrap(),
+            "Minuto 07:31 no debió perderse"
+        );
+        assert!(
+            AlertsRepository::is_claimed(&pool, key2).await.unwrap(),
+            "Minuto 07:32 debió ser evaluado"
+        );
+
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_minute_transient_retry() {
+        let server = MockServer::start().await;
+
+        // Primera llamada falla con 500, luego llamadas subsiguientes responden 200
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                "ok": false,
+                "error_code": 500,
+                "description": "Internal Server Error"
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {
+                    "message_id": 104,
+                    "date": 1700000000,
+                    "chat": { "id": 9901, "type": "private" },
+                    "text": "test"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_summary_retry_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 123456789,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", server.uri())).unwrap(),
+        );
+
+        let u =
+            UsersRepository::upsert_login(&pool, 9901, "CIF_9901", 1, "Estudiante Retry", "tok")
+                .await
+                .unwrap();
+        UsersRepository::update_summary_config(&pool, u.chat_id, true, r#"["07:30"]"#, r#"[5]"#)
+            .await
+            .unwrap();
+
+        let worker = SummaryWorker::new(pool.clone(), bot, config.clone());
+        let dt_0730 = config
+            .bot_tz
+            .with_ymd_and_hms(2026, 10, 30, 7, 30, 0)
+            .unwrap();
+
+        // 1. Evaluación a las 07:30: falla por error 500, se libera el claim y se encola en retry_queue
+        worker.evaluate_minute(&dt_0730).await;
+        let key = "summary:9901:2026-10-30:07:30";
+        assert!(
+            !AlertsRepository::is_claimed(&pool, key).await.unwrap(),
+            "El claim debió liberarse tras fallo"
+        );
+
+        // 2. Siguiente minuto 07:31: procesa reintentos encolados y se envía con éxito (HTTP 200)
+        let dt_0731 = config
+            .bot_tz
+            .with_ymd_and_hms(2026, 10, 30, 7, 31, 0)
+            .unwrap();
+        worker.evaluate_minute(&dt_0731).await;
+        assert!(
+            AlertsRepository::is_claimed(&pool, key).await.unwrap(),
+            "El reintento debió reclamar y enviar el resumen"
+        );
 
         drop(pool);
         let _ = std::fs::remove_file(&db_path);

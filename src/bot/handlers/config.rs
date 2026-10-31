@@ -1,5 +1,5 @@
 use crate::bot::{copy, Bot};
-use crate::storage::{AlertsRepository, UsersRepository};
+use crate::storage::UsersRepository;
 use sqlx::SqlitePool;
 use teloxide::prelude::*;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, ParseMode};
@@ -310,8 +310,7 @@ pub async fn handle_config_callback(
                 .await?;
         }
         "cfg:logout" => {
-            let _ = UsersRepository::delete(&pool, chat_id).await;
-            let _ = AlertsRepository::purge_chat(&pool, chat_id).await;
+            let _ = crate::bot::handlers::auth::execute_logout(&pool, None, chat_id).await;
             bot.edit_message_text(msg.chat().id, msg.id(), copy::LOGOUT_SUCCESS)
                 .parse_mode(ParseMode::Html)
                 .await?;
