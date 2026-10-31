@@ -26,6 +26,10 @@ pub fn create_dispatcher(
     config: Arc<Config>,
     scheduler: Option<DeadlineScheduler>,
 ) -> Dispatcher<Bot, anyhow::Error, teloxide::dispatching::DefaultKey> {
+    if let Some(ref sched) = scheduler {
+        crate::bot::handlers::auth::set_global_scheduler(sched.clone());
+    }
+
     let rate_limiter = LoginRateLimiter::new();
 
     let student_handler = teloxide::filter_command::<Command, _>()

@@ -30,7 +30,7 @@ pub async fn handle_login(
 
     let chat_id = msg.chat.id.0;
 
-    // 3. Verificación de Rate Limit (A-11: máx 3 intentos / 10 min por chat)
+    // 3. Verificación de Rate Limit inicial por chat_id (A-11)
     if rate_limiter.is_rate_limited(chat_id) {
         bot.send_message(msg.chat.id, copy::LOGIN_RATE_LIMITED)
             .parse_mode(ParseMode::Html)
@@ -51,7 +51,17 @@ pub async fn handle_login(
         return Ok(());
     }
 
-    // Envolver inmediatamente la contraseña en un buffer Zeroizing (RF-01, A-09)
+    // Comprobación y reserva atómica de intento por chat_id y por cif (R-12)
+    if rate_limiter.check_and_record(chat_id, cif).is_err() {
+        bot.send_message(msg.chat.id, copy::LOGIN_RATE_LIMITED)
+            .parse_mode(ParseMode::Html)
+            .await?;
+        return Ok(());
+    }
+
+    // Envolver la contraseña en un buffer Zeroizing (RF-01, A-09).
+    // Nota (R-15): El borrado de memoria es best-effort ya que copias en texto claro
+    // pueden existir transitoriamente en `args: String` o en la estructura `Message` de teloxide.
     let pass_zeroizing = Zeroizing::new(pass_raw.to_string());
 
     // Registro seguro en tracing (PROHIBIDO registrar la contraseña o el texto del mensaje)
@@ -60,29 +70,29 @@ pub async fn handle_login(
     // 5. Autenticación en Moodle intercambiando credenciales por wstoken
     let login_info = match moodle.login(cif, pass_zeroizing).await {
         Ok(info) => {
-            rate_limiter.clear(chat_id);
+            rate_limiter.clear_both(chat_id, cif);
             info
         }
         Err(err) => {
             match err {
                 MoodleError::InvalidLogin => {
-                    rate_limiter.record_failure(chat_id);
+                    // El intento fallido ya fue registrado de forma atómica en check_and_record
                     bot.send_message(msg.chat.id, copy::LOGIN_INVALID_CREDENTIALS)
                         .parse_mode(ParseMode::Html)
                         .await?;
                 }
                 MoodleError::Maintenance => {
+                    rate_limiter.rollback(chat_id, cif);
                     bot.send_message(msg.chat.id, copy::UAM_MAINTENANCE)
                         .parse_mode(ParseMode::Html)
                         .await?;
                 }
                 other => {
-                    tracing::warn!(chat_id = chat_id, error = %other, "Error durante login en Moodle");
-                    bot.send_message(
-                        msg.chat.id,
-                        format!("⚠️ Error de comunicación con Moodle: {other}"),
-                    )
-                    .await?;
+                    rate_limiter.rollback(chat_id, cif);
+                    tracing::warn!(chat_id = chat_id, error = %other, "Error interno durante login en Moodle");
+                    bot.send_message(msg.chat.id, copy::MOODLE_COMMUNICATION_ERROR)
+                        .parse_mode(ParseMode::Html)
+                        .await?;
                 }
             }
             return Ok(());
@@ -156,7 +166,40 @@ pub async fn handle_login(
     Ok(())
 }
 
-/// Maneja el comando `/logout` eliminando al usuario, purgando sus alertas y cancelando sus jobs en el scheduler (A-14, A-16).
+static GLOBAL_SCHEDULER: std::sync::RwLock<Option<DeadlineScheduler>> =
+    std::sync::RwLock::new(None);
+
+/// Registra la instancia activa de DeadlineScheduler para uso del bot en callbacks (R-15).
+pub fn set_global_scheduler(sched: DeadlineScheduler) {
+    if let Ok(mut lock) = GLOBAL_SCHEDULER.write() {
+        *lock = Some(sched);
+    }
+}
+
+/// Obtiene la instancia activa de DeadlineScheduler si fue registrada.
+pub fn get_global_scheduler() -> Option<DeadlineScheduler> {
+    GLOBAL_SCHEDULER.read().ok().and_then(|lock| lock.clone())
+}
+
+/// Realiza el proceso unificado de logout: elimina el usuario en BD, purga alertas en sent_alerts
+/// y cancela sus jobs activos en el planificador de plazos (A-14, A-16, R-15).
+pub async fn execute_logout(
+    pool: &SqlitePool,
+    scheduler: Option<&DeadlineScheduler>,
+    chat_id: i64,
+) -> Result<bool, anyhow::Error> {
+    let deleted = UsersRepository::delete(pool, chat_id).await?;
+    let _ = AlertsRepository::purge_chat(pool, chat_id).await;
+
+    let sched_opt = scheduler.cloned().or_else(get_global_scheduler);
+    if let Some(ref sched) = sched_opt {
+        let _ = sched.cancel_for_user(chat_id).await;
+    }
+
+    Ok(deleted)
+}
+
+/// Maneja el comando `/logout` eliminando al usuario, purgando sus alertas y cancelando sus jobs en el scheduler (A-14, A-16, R-15).
 pub async fn handle_logout(
     bot: Bot,
     msg: Message,
@@ -164,12 +207,7 @@ pub async fn handle_logout(
     scheduler: Option<DeadlineScheduler>,
 ) -> Result<(), anyhow::Error> {
     let chat_id = msg.chat.id.0;
-    let deleted = UsersRepository::delete(&pool, chat_id).await?;
-    let _ = AlertsRepository::purge_chat(&pool, chat_id).await;
-
-    if let Some(ref sched) = scheduler {
-        let _ = sched.cancel_for_user(chat_id).await;
-    }
+    let deleted = execute_logout(&pool, scheduler.as_ref(), chat_id).await?;
 
     if deleted {
         tracing::info!(

@@ -6,6 +6,7 @@ use crate::storage::{AlertsRepository, UsersRepository};
 use sqlx::SqlitePool;
 use teloxide::prelude::*;
 use teloxide::types::ParseMode;
+use teloxide::{ApiError, RequestError};
 
 /// Calcula un hash FNV-1a de 64 bits en formato hexadecimal estable (RF-09).
 pub fn fnv1a_hash(input: &str) -> String {
@@ -66,12 +67,20 @@ impl AlertService {
                     "Error al enviar alerta por Telegram"
                 );
 
-                // 3. Clasificación de errores de Telegram (A-15):
-                let err_lower = err.to_string().to_lowercase();
-                if err_lower.contains("bot was blocked by the user")
-                    || err_lower.contains("user is deactivated")
-                    || err_lower.contains("chat not found")
-                {
+                // 3. Clasificación de errores de Telegram (A-15, R-10):
+                let is_blocked = match &err {
+                    RequestError::Api(
+                        ApiError::BotBlocked | ApiError::UserDeactivated | ApiError::ChatNotFound,
+                    ) => true,
+                    _ => {
+                        let err_lower = err.to_string().to_lowercase();
+                        err_lower.contains("bot was blocked by the user")
+                            || err_lower.contains("user is deactivated")
+                            || err_lower.contains("chat not found")
+                    }
+                };
+
+                if is_blocked {
                     tracing::warn!(
                         chat_id = chat_id,
                         "Usuario bloqueó el bot o cuenta desactivada. Marcando inactivo."
@@ -132,7 +141,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -184,7 +193,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -243,7 +252,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -271,5 +280,61 @@ mod tests {
             !claimed,
             "La alerta debe liberarse tras un error transitorio"
         );
+    }
+
+    #[tokio::test]
+    async fn test_alert_dispatcher_user_deactivated_marks_inactive() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                "ok": false,
+                "error_code": 403,
+                "description": "Forbidden: user is deactivated"
+            })))
+            .mount(&server)
+            .await;
+
+        let rand_id: u64 = rand::random();
+        let db_path = std::env::temp_dir().join(format!("test_alerts_deactivated_{rand_id}.db"));
+        let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 123456789,
+            database_url,
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", server.uri())).unwrap(),
+        );
+
+        UsersRepository::upsert_login(
+            &pool,
+            4031,
+            "24014031",
+            4031,
+            "Deactivated User",
+            "token_deact",
+        )
+        .await
+        .unwrap();
+
+        let key = "new_assign:4031:11";
+        let res = AlertService::dispatch(&pool, &bot, key, "new_assignment", 4031, "Aviso")
+            .await
+            .unwrap();
+        assert!(!res);
+
+        let user = UsersRepository::get(&pool, 4031).await.unwrap().unwrap();
+        assert!(!user.is_active);
+        assert_eq!(user.inactive_reason.as_deref(), Some("bot_blocked"));
     }
 }
