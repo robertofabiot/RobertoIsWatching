@@ -123,6 +123,12 @@ impl DeadlineScheduler {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActiveJobInfo {
+    pub version: u64,
+    pub effective_due: i64,
+}
+
 /// Worker asíncrono que ejecuta la única tarea Tokio del planificador de plazos (A-16).
 pub struct DeadlineWorker {
     pub(crate) pool: SqlitePool,
@@ -130,7 +136,7 @@ pub struct DeadlineWorker {
     pub(crate) config: Arc<Config>,
     rx: mpsc::Receiver<DeadlineCommand>,
     heap: BinaryHeap<ScheduledDeadline>,
-    versions: HashMap<(i64, i64), u64>,
+    pub(crate) versions: HashMap<(i64, i64), ActiveJobInfo>,
     booted: bool,
     start_instant: tokio::time::Instant,
     start_epoch: i64,
@@ -189,13 +195,30 @@ impl DeadlineWorker {
     }
 
     /// Inserta un job en el min-heap asignándole un token de versión nuevo.
+    /// Si ya existe un job activo con el mismo `effective_due` para ese par (chat_id, assignment_id),
+    /// la llamada se ignora sin duplicar entradas en el heap (R-07).
     pub fn push_job(&mut self, mut job: DeadlineJob) {
-        let entry = self
+        if let Some(existing) = self.versions.get(&(job.chat_id, job.assignment_id)) {
+            if existing.effective_due == job.effective_due {
+                // R-07: Ya existe un job activo con el mismo plazo -> no duplicar en el heap
+                return;
+            }
+        }
+
+        let new_version = self
             .versions
-            .entry((job.chat_id, job.assignment_id))
-            .or_insert(0);
-        *entry += 1;
-        job.version = *entry;
+            .get(&(job.chat_id, job.assignment_id))
+            .map(|info| info.version + 1)
+            .unwrap_or(1);
+
+        self.versions.insert(
+            (job.chat_id, job.assignment_id),
+            ActiveJobInfo {
+                version: new_version,
+                effective_due: job.effective_due,
+            },
+        );
+        job.version = new_version;
 
         // El escalón crítico de 2h debe disparar 2 horas (7200 s) antes de effective_due
         let fire_epoch = job.effective_due - 2 * 3600;
@@ -359,7 +382,7 @@ impl DeadlineWorker {
                         let is_current = self
                             .versions
                             .get(&(top.job.chat_id, top.job.assignment_id))
-                            .map(|&v| v == top.job.version)
+                            .map(|info| info.version == top.job.version)
                             .unwrap_or(false);
 
                         if !is_current {
@@ -370,6 +393,9 @@ impl DeadlineWorker {
                             );
                             continue;
                         }
+
+                        // R-07: Limpiar la entrada de versions al dispararse
+                        self.versions.remove(&(top.job.chat_id, top.job.assignment_id));
 
                         // Re-verificación en SQLite antes de despachar alerta crítica de 2h
                         if let Err(e) = self.process_deadline_alert(top.job).await {
@@ -542,7 +568,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url: "sqlite::memory:".to_string(),
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -581,7 +607,7 @@ mod tests {
     async fn test_reschedule_invalidates_earlier_version() {
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url: "sqlite::memory:".to_string(),
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -600,7 +626,21 @@ mod tests {
             effective_due: 10000,
             version: 0,
         });
-        assert_eq!(worker.versions.get(&(1, 10)), Some(&1));
+        assert_eq!(worker.versions.get(&(1, 10)).map(|i| i.version), Some(1));
+
+        // R-07: Inserción repetida con el mismo effective_due no debe añadir entrada nueva al heap
+        worker.push_job(DeadlineJob {
+            chat_id: 1,
+            assignment_id: 10,
+            effective_due: 10000,
+            version: 0,
+        });
+        assert_eq!(
+            worker.len(),
+            1,
+            "push_job con mismo effective_due no debe duplicar entrada en el heap"
+        );
+        assert_eq!(worker.versions.get(&(1, 10)).map(|i| i.version), Some(1));
 
         // Reprogramar fecha con due = 20000 (fire_at = 12800) -> versión 2
         worker.push_job(DeadlineJob {
@@ -609,7 +649,7 @@ mod tests {
             effective_due: 20000,
             version: 0,
         });
-        assert_eq!(worker.versions.get(&(1, 10)), Some(&2));
+        assert_eq!(worker.versions.get(&(1, 10)).map(|i| i.version), Some(2));
 
         // El heap tiene 2 elementos: el primero que sale es el de due=10000 (versión 1)
         assert_eq!(worker.len(), 2);
@@ -619,7 +659,7 @@ mod tests {
         let is_current_1 = worker
             .versions
             .get(&(popped_1.job.chat_id, popped_1.job.assignment_id))
-            .map(|&v| v == popped_1.job.version)
+            .map(|i| i.version == popped_1.job.version)
             .unwrap_or(false);
         assert!(
             !is_current_1,
@@ -632,7 +672,7 @@ mod tests {
         let is_current_2 = worker
             .versions
             .get(&(popped_2.job.chat_id, popped_2.job.assignment_id))
-            .map(|&v| v == popped_2.job.version)
+            .map(|i| i.version == popped_2.job.version)
             .unwrap_or(false);
         assert!(
             is_current_2,
@@ -669,7 +709,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -840,7 +880,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -987,7 +1027,7 @@ mod tests {
     async fn test_drop_jobs_on_cancel_for_user() {
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url: "sqlite::memory:".to_string(),
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -1029,7 +1069,7 @@ mod tests {
         assert_eq!(worker.versions.len(), 1);
         assert!(!worker.versions.contains_key(&(6001, 11)));
         assert!(!worker.versions.contains_key(&(6001, 12)));
-        assert_eq!(worker.versions.get(&(6002, 13)), Some(&1));
+        assert_eq!(worker.versions.get(&(6002, 13)).map(|i| i.version), Some(1));
 
         // Al sacar los elementos del heap:
         // Los de 6001 deben evaluarse como obsoletos/cancelados
@@ -1037,7 +1077,7 @@ mod tests {
             let is_current = worker
                 .versions
                 .get(&(top.job.chat_id, top.job.assignment_id))
-                .map(|&v| v == top.job.version)
+                .map(|i| i.version == top.job.version)
                 .unwrap_or(false);
 
             if top.job.chat_id == 6001 {
@@ -1049,5 +1089,61 @@ mod tests {
                 assert!(is_current, "Los jobs de 6002 deben mantenerse vigentes");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_r07_versions_cleanup_on_fire_and_duplicate_suppression() {
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 123456789,
+            database_url: "sqlite::memory:".to_string(),
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = crate::storage::init(&config).await.unwrap();
+        let bot = crate::bot::create_bot(&config.bot_token);
+        let (_scheduler, mut worker) = DeadlineScheduler::new(pool, bot, config);
+
+        // Agendar job para alumno 7001, tarea 21 con due = 5000
+        worker.push_job(DeadlineJob {
+            chat_id: 7001,
+            assignment_id: 21,
+            effective_due: 5000,
+            version: 0,
+        });
+        assert_eq!(worker.len(), 1);
+        assert_eq!(worker.versions.get(&(7001, 21)).map(|i| i.version), Some(1));
+
+        // Intento de agendar idéntico job (mismo chat_id, assignment_id, effective_due)
+        worker.push_job(DeadlineJob {
+            chat_id: 7001,
+            assignment_id: 21,
+            effective_due: 5000,
+            version: 0,
+        });
+        // Debe ignorarse sin duplicar en heap ni alterar versión
+        assert_eq!(worker.len(), 1, "Heap no debe duplicar el job (R-07)");
+        assert_eq!(worker.versions.get(&(7001, 21)).map(|i| i.version), Some(1));
+
+        // Simular que el job se dispara al vencer su tiempo:
+        let top = worker.heap.pop().unwrap();
+        let is_current = worker
+            .versions
+            .get(&(top.job.chat_id, top.job.assignment_id))
+            .map(|i| i.version == top.job.version)
+            .unwrap_or(false);
+        assert!(is_current, "Job debe ser el vigente");
+
+        // Al dispararse, se limpia de versions
+        worker
+            .versions
+            .remove(&(top.job.chat_id, top.job.assignment_id));
+        assert!(
+            !worker.versions.contains_key(&(7001, 21)),
+            "Entrada en versions debe haberse purgado al disparar el job (R-07)"
+        );
     }
 }
