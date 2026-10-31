@@ -297,7 +297,7 @@ impl UsersRepository {
         .fetch_optional(&mut *tx)
         .await?;
 
-        if let Some(_user) = existing_user {
+        if let Some(user) = existing_user {
             // Re-login: si el CIF estaba en otro chat, liberar el vínculo previo (A-12)
             sqlx::query("DELETE FROM users WHERE uam_cif = ? AND chat_id != ?")
                 .bind(cif)
@@ -305,7 +305,68 @@ impl UsersRepository {
                 .execute(&mut *tx)
                 .await?;
 
-            // Actualizar datos de sesión y reactivar cuenta
+            // R-06: Si el usuario existente estaba inactivo, su reactivación consumirá un nuevo cupo activo.
+            // Verificar si el límite de usuarios activos está lleno antes de reactivar o admitir.
+            if !user.is_active {
+                let max_setting = sqlx::query_as::<_, (String,)>(
+                    "SELECT value FROM system_settings WHERE key = 'max_users'",
+                )
+                .fetch_optional(&mut *tx)
+                .await?;
+
+                let max_users: i64 = match max_setting {
+                    Some((val,)) => val.trim().parse::<i64>().unwrap_or(300),
+                    None => 300,
+                };
+
+                let (current_count,): (i64,) =
+                    sqlx::query_as("SELECT COUNT(*) FROM users WHERE is_active = 1")
+                        .fetch_one(&mut *tx)
+                        .await?;
+
+                if current_count >= max_users {
+                    return Ok(AdmissionResult::Full);
+                }
+            }
+
+            // R-03: Si el chat ya existía pero con un CIF o user_id distinto (cambio de usuario en el mismo chat de Telegram),
+            // eliminar los datos previos para disparar cascada en user_courses y user_submissions, y purgar sent_alerts.
+            if user.uam_cif != cif || user.uam_user_id != uam_user_id {
+                sqlx::query("DELETE FROM sent_alerts WHERE chat_id = ?")
+                    .bind(chat_id)
+                    .execute(&mut *tx)
+                    .await?;
+
+                sqlx::query("DELETE FROM users WHERE chat_id = ?")
+                    .bind(chat_id)
+                    .execute(&mut *tx)
+                    .await?;
+
+                sqlx::query(
+                    "INSERT INTO users (chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason) \
+                     VALUES (?, ?, ?, ?, ?, 1, NULL)",
+                )
+                .bind(chat_id)
+                .bind(cif)
+                .bind(uam_user_id)
+                .bind(fullname)
+                .bind(wstoken)
+                .execute(&mut *tx)
+                .await?;
+
+                let new_user = sqlx::query_as::<_, User>(
+                    "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at \
+                     FROM users WHERE chat_id = ?"
+                )
+                .bind(chat_id)
+                .fetch_one(&mut *tx)
+                .await?;
+
+                tx.commit().await?;
+                return Ok(AdmissionResult::AlreadyMember(new_user));
+            }
+
+            // Mismo CIF: actualizar datos de sesión y reactivar cuenta
             sqlx::query(
                 "UPDATE users SET \
                  uam_cif = ?, \
@@ -360,7 +421,7 @@ impl UsersRepository {
             .execute(&mut *tx)
             .await?;
 
-        // 4. Verificar límite de cupos disponibles
+        // 4. Verificar límite de cupos disponibles contando únicamente usuarios activos (R-06)
         let max_setting = sqlx::query_as::<_, (String,)>(
             "SELECT value FROM system_settings WHERE key = 'max_users'",
         )
@@ -372,9 +433,10 @@ impl UsersRepository {
             None => 300,
         };
 
-        let (current_count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
-            .fetch_one(&mut *tx)
-            .await?;
+        let (current_count,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM users WHERE is_active = 1")
+                .fetch_one(&mut *tx)
+                .await?;
 
         if current_count >= max_users {
             return Ok(AdmissionResult::Full);
