@@ -57,9 +57,30 @@ impl SubmissionTier {
             return Self::Cold;
         }
 
-        // Si ya fue entregada pero aún no tiene calificación, se sondea en caliente para alertar rápido la nota
+        // Si ya fue entregada pero aún no tiene calificación (R-04):
+        // Poner techo al tier Hot: si la tarea no tiene fecha (due == 0 o None), degradar a Warm.
+        // Si pasaron más de 14 días desde duedate (o updated_at), degradar a Warm.
         if is_submitted {
-            return Self::Hot;
+            let due_opt = effective_duedate.filter(|&d| d > 0);
+            match due_opt {
+                None => return Self::Warm,
+                Some(due) => {
+                    let fourteen_days = 14 * 86400;
+                    if now_epoch.saturating_sub(due) > fourteen_days {
+                        return Self::Warm;
+                    }
+                    if let Some(sub) = submission {
+                        if let Some(updated) = sub.updated_at {
+                            if now_epoch.saturating_sub(updated.and_utc().timestamp())
+                                > fourteen_days
+                            {
+                                return Self::Warm;
+                            }
+                        }
+                    }
+                    return Self::Hot;
+                }
+            }
         }
 
         if let Some(due) = effective_duedate {
@@ -83,10 +104,12 @@ impl SubmissionTier {
                     }
                 }
             } else {
-                Self::Hot
+                // R-04: Tarea sin fecha definida (due == 0) -> Warm en vez de Hot
+                Self::Warm
             }
         } else {
-            Self::Hot
+            // R-04: Tarea sin fecha definida (None) -> Warm en vez de Hot
+            Self::Warm
         }
     }
 
@@ -204,18 +227,23 @@ impl ScannerWorker {
 
         if should_alert_down {
             tracing::error!("Moodle CircuitBreaker pasó a DOWN. Notificando al admin (A-17)...");
+            let admin_down_msg = "⚠️ <b>[ADMIN ALERT] Moodle Circuit Breaker: DOWN (Roberto's watching UAM Virtual burn)</b>\n\n\
+                Se han acumulado fallos consecutivos en el webservice de Moodle. El tráfico de fondo se ha suspendido temporalmente.";
             let _ = self
                 .bot
-                .send_message(ChatId(self.config.admin_chat_id), copy::UAM_MAINTENANCE)
+                .send_message(ChatId(self.config.admin_chat_id), admin_down_msg)
                 .parse_mode(ParseMode::Html)
                 .await;
         } else if should_alert_up {
             tracing::info!(
                 "Moodle CircuitBreaker se recuperó (UP). Notificando al admin (A-17)..."
             );
+            let admin_up_msg =
+                "✅ <b>[ADMIN ALERT] Moodle Circuit Breaker: UP (UAM Virtual recuperado)</b>\n\n\
+                La conectividad con el webservice de Moodle se ha restablecido satisfactoriamente.";
             let _ = self
                 .bot
-                .send_message(ChatId(self.config.admin_chat_id), copy::UAM_RECOVERED)
+                .send_message(ChatId(self.config.admin_chat_id), admin_up_msg)
                 .parse_mode(ParseMode::Html)
                 .await;
         }
@@ -225,7 +253,7 @@ impl ScannerWorker {
     pub async fn run_scan_cycle(&self) -> Result<ScanCycleSummary, anyhow::Error> {
         self.check_breaker_transition().await;
         let cycle = self.cycle_count.fetch_add(1, Ordering::SeqCst);
-        let summary = self.run_scan_cycle_with_count(cycle).await?;
+        let summary = self.run_scan_cycle_inner(cycle, None).await?;
         self.check_breaker_transition().await;
         Ok(summary)
     }
@@ -234,6 +262,27 @@ impl ScannerWorker {
     pub async fn run_scan_cycle_with_count(
         &self,
         cycle_count: u64,
+    ) -> Result<ScanCycleSummary, anyhow::Error> {
+        self.run_scan_cycle_inner(cycle_count, None).await
+    }
+
+    /// Ejecuta un ciclo de escaneo observando la señal de shutdown entre cursos y alumnos (R-05, R-09).
+    pub async fn run_scan_cycle_with_shutdown(
+        &self,
+        shutdown_rx: &watch::Receiver<bool>,
+    ) -> Result<ScanCycleSummary, anyhow::Error> {
+        self.check_breaker_transition().await;
+        let cycle = self.cycle_count.fetch_add(1, Ordering::SeqCst);
+        let summary = self.run_scan_cycle_inner(cycle, Some(shutdown_rx)).await?;
+        self.check_breaker_transition().await;
+        Ok(summary)
+    }
+
+    /// Ejecuta el ciclo de escaneo con soporte opcional de observación de apagado cooperativo.
+    pub async fn run_scan_cycle_inner(
+        &self,
+        cycle_count: u64,
+        shutdown_rx: Option<&watch::Receiver<bool>>,
     ) -> Result<ScanCycleSummary, anyhow::Error> {
         let start_time = std::time::Instant::now();
         let start_counts = self.moodle.snapshot();
@@ -250,6 +299,14 @@ impl ScannerWorker {
 
         let courses = CoursesRepository::unique_active_courses(&self.pool).await?;
         for course in courses {
+            if let Some(rx) = shutdown_rx {
+                if *rx.borrow() {
+                    tracing::info!(
+                        "Señal de apagado detectada en ciclo de escaneo. Abortando limpiamente."
+                    );
+                    break;
+                }
+            }
             let donors = UsersRepository::active_tokens_for_course(&self.pool, course.id).await?;
             if donors.is_empty() {
                 tracing::warn!(
@@ -379,6 +436,21 @@ impl ScannerWorker {
                         assignment,
                         changes,
                     } => {
+                        // R-05: Si el ciclo previo fue interrumpido tras el upsert pero antes de despachar alertas,
+                        // o si fue insertada entre escaneos, asegurar que los alumnos pendientes reciban su alerta
+                        if !is_baseline {
+                            let was_interrupted =
+                                match (&course.last_scanned, &assignment.last_updated_at) {
+                                    (Some(last_scanned), Some(updated_at)) => {
+                                        updated_at > last_scanned
+                                    }
+                                    _ => false,
+                                };
+                            if was_interrupted {
+                                newly_inserted_assignments.push(assignment.clone());
+                            }
+                        }
+
                         // Si cambió la fecha de vencimiento general, reprogramar jobs de alerta 2h
                         if changes.duedate_changed {
                             if let Some(ref sched) = self.scheduler {
@@ -425,8 +497,28 @@ impl ScannerWorker {
                             }
                         }
                     }
-                    UpsertAssignmentResult::Unchanged(_) => {}
+                    UpsertAssignmentResult::Unchanged(assignment) => {
+                        // R-05: Si el ciclo previo fue interrumpido tras el upsert o el proceso reinició,
+                        // esta tarea quedó en la BD sin enviar alertas a todos los alumnos.
+                        if !is_baseline {
+                            let was_interrupted =
+                                match (&course.last_scanned, &assignment.last_updated_at) {
+                                    (Some(last_scanned), Some(updated_at)) => {
+                                        updated_at > last_scanned
+                                    }
+                                    _ => false,
+                                };
+                            if was_interrupted {
+                                newly_inserted_assignments.push(assignment);
+                            }
+                        }
+                    }
                 }
+            }
+
+            if !is_baseline && !newly_inserted_assignments.is_empty() {
+                newly_inserted_assignments.sort_by_key(|a| a.id);
+                newly_inserted_assignments.dedup_by_key(|a| a.id);
             }
 
             // Si el curso ya tenía línea base, notificar a los alumnos inscritos (RF-03)
@@ -435,8 +527,14 @@ impl ScannerWorker {
                 let enrolled_students =
                     UsersRepository::active_users_for_course(&self.pool, course.id).await?;
 
-                for assign in &newly_inserted_assignments {
+                'assign_loop: for assign in &newly_inserted_assignments {
                     for student in &enrolled_students {
+                        if let Some(rx) = shutdown_rx {
+                            if *rx.borrow() {
+                                tracing::info!("Señal de apagado detectada durante envío de alertas. Deteniendo ciclo...");
+                                break 'assign_loop;
+                            }
+                        }
                         // Confirmar visibilidad con el token del propio alumno (A-07)
                         match self
                             .moodle
@@ -533,7 +631,28 @@ impl ScannerWorker {
                         if !is_baseline {
                             newly_inserted_modules.push(inserted_mod);
                         }
+                    } else if !is_baseline {
+                        // R-05: Si el ciclo previo fue interrumpido tras guardar el módulo en la BD,
+                        // incluirlo para que los alumnos no pierdan la alerta de nuevo material
+                        if let Ok(Some(existing_mod)) =
+                            ModulesRepository::get(&self.pool, m.id).await
+                        {
+                            let was_interrupted =
+                                match (&course.last_scanned, &existing_mod.created_at) {
+                                    (Some(last_scanned), Some(created_at)) => {
+                                        created_at > last_scanned
+                                    }
+                                    _ => false,
+                                };
+                            if was_interrupted {
+                                newly_inserted_modules.push(existing_mod);
+                            }
+                        }
                     }
+                }
+                if !is_baseline && !newly_inserted_modules.is_empty() {
+                    newly_inserted_modules.sort_by_key(|m| m.id);
+                    newly_inserted_modules.dedup_by_key(|m| m.id);
                 }
             }
 
@@ -542,8 +661,14 @@ impl ScannerWorker {
                 let enrolled_students =
                     UsersRepository::active_users_for_course(&self.pool, course.id).await?;
 
-                for m in &newly_inserted_modules {
+                'module_loop: for m in &newly_inserted_modules {
                     for student in &enrolled_students {
+                        if let Some(rx) = shutdown_rx {
+                            if *rx.borrow() {
+                                tracing::info!("Señal de apagado detectada durante envío de alertas de materiales. Deteniendo ciclo...");
+                                break 'module_loop;
+                            }
+                        }
                         let alert_key = format!("new_material:{}:{}", student.chat_id, m.id);
                         let msg = copy::alert_new_material(
                             &m.name,
@@ -577,8 +702,19 @@ impl ScannerWorker {
             let enrolled_students =
                 UsersRepository::active_users_for_course(&self.pool, course.id).await?;
 
-            for student in &enrolled_students {
+            'student_loop: for student in &enrolled_students {
+                if let Some(rx) = shutdown_rx {
+                    if *rx.borrow() {
+                        tracing::info!("Señal de apagado detectada durante sondeo de entregas. Deteniendo ciclo...");
+                        break 'student_loop;
+                    }
+                }
                 for assign in &all_course_assigns {
+                    if let Some(rx) = shutdown_rx {
+                        if *rx.borrow() {
+                            break 'student_loop;
+                        }
+                    }
                     let existing_sub =
                         SubmissionsRepository::get(&self.pool, student.chat_id, assign.id).await?;
                     let effective_due = existing_sub
@@ -787,6 +923,17 @@ impl ScannerWorker {
                 }
             }
 
+            // R-05 & R-09: Si el ciclo fue interrumpido por señal de shutdown, no actualizar touch_scanned
+            // para que en el próximo ciclo no se pierdan silenciosamente las alertas pendientes
+            let was_interrupted = shutdown_rx.map(|rx| *rx.borrow()).unwrap_or(false);
+            if was_interrupted {
+                tracing::info!(
+                    course_id = course.id,
+                    "Ciclo de escaneo interrumpido por apagado cooperativo; preservando marca de escaneo"
+                );
+                break;
+            }
+
             // Actualizar marca de último escaneo del curso
             CoursesRepository::touch_scanned(&self.pool, course.id).await?;
 
@@ -858,7 +1005,7 @@ impl ScannerWorker {
         }
 
         // Primer ciclo tras el retardo inicial
-        if let Err(err) = self.run_scan_cycle().await {
+        if let Err(err) = self.run_scan_cycle_with_shutdown(&shutdown_rx).await {
             tracing::error!(error = %err, "Error en ciclo inicial de escaneo.");
         }
 
@@ -870,7 +1017,7 @@ impl ScannerWorker {
                     break;
                 }
                 _ = tokio::time::sleep(self.interval) => {
-                    if let Err(err) = self.run_scan_cycle().await {
+                    if let Err(err) = self.run_scan_cycle_with_shutdown(&shutdown_rx).await {
                         tracing::error!(error = %err, "Error durante ciclo periódico de escaneo.");
                     }
                 }
@@ -884,6 +1031,9 @@ impl ScannerWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bot::create_bot_with_url;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
     async fn test_scanner_worker_shutdown() {
@@ -891,7 +1041,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url: "sqlite::memory:".to_string(),
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -979,7 +1129,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -1104,7 +1254,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -1230,7 +1380,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -1353,7 +1503,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -1489,7 +1639,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -1587,7 +1737,7 @@ mod tests {
                 "result": {
                     "message_id": 999,
                     "date": 1700000000,
-                    "chat": { "id": 1125347763, "type": "private" },
+                    "chat": { "id": 123456789, "type": "private" },
                     "text": "alerta admin"
                 }
             })))
@@ -1600,7 +1750,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -1664,7 +1814,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -1809,7 +1959,7 @@ mod tests {
 
         let config = Arc::new(Config {
             bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-            admin_chat_id: 1125347763,
+            admin_chat_id: 123456789,
             database_url,
             max_users_default: 300,
             bot_tz: chrono_tz::America::Managua,
@@ -1908,5 +2058,207 @@ mod tests {
         // En un segundo ciclo, no debe volverse a enviar (idempotencia)
         let summary2 = worker.run_scan_cycle_with_count(1).await.unwrap();
         assert_eq!(summary2.alerts_dispatched, 0);
+    }
+
+    #[test]
+    fn test_r04_submission_tier_capping() {
+        let now = chrono::Utc::now().timestamp();
+
+        // 1. Tarea calificada -> Cold
+        let sub_graded = UserSubmission {
+            chat_id: 1,
+            assignment_id: 10,
+            status: Some("submitted".to_string()),
+            graded: true,
+            grade: Some("95".to_string()),
+            feedback: None,
+            due_override: None,
+            updated_at: None,
+        };
+        assert_eq!(
+            SubmissionTier::classify(now, Some(now + 1000), Some(&sub_graded)),
+            SubmissionTier::Cold
+        );
+
+        // 2. Tarea entregada sin nota:
+        // 2a. Sin fecha de entrega (due == 0 o None) -> Warm (R-04)
+        let sub_submitted_no_due = UserSubmission {
+            chat_id: 1,
+            assignment_id: 11,
+            status: Some("submitted".to_string()),
+            graded: false,
+            grade: None,
+            feedback: None,
+            due_override: None,
+            updated_at: None,
+        };
+        assert_eq!(
+            SubmissionTier::classify(now, None, Some(&sub_submitted_no_due)),
+            SubmissionTier::Warm,
+            "Entregada sin fecha límite debe ser Warm (R-04)"
+        );
+        assert_eq!(
+            SubmissionTier::classify(now, Some(0), Some(&sub_submitted_no_due)),
+            SubmissionTier::Warm,
+            "Entregada con due=0 debe ser Warm (R-04)"
+        );
+
+        // 2b. Entregada hace poco (< 14 días desde duedate) -> Hot
+        let sub_submitted_recent = UserSubmission {
+            chat_id: 1,
+            assignment_id: 12,
+            status: Some("submitted".to_string()),
+            graded: false,
+            grade: None,
+            feedback: None,
+            due_override: None,
+            updated_at: None,
+        };
+        assert_eq!(
+            SubmissionTier::classify(now, Some(now - 5 * 86400), Some(&sub_submitted_recent)),
+            SubmissionTier::Hot,
+            "Entregada hace < 14 días debe mantenerse en Hot"
+        );
+
+        // 2c. Entregada hace más de 14 días desde duedate -> Warm (R-04)
+        assert_eq!(
+            SubmissionTier::classify(now, Some(now - 15 * 86400), Some(&sub_submitted_recent)),
+            SubmissionTier::Warm,
+            "Entregada hace > 14 días debe degradarse a Warm (R-04)"
+        );
+
+        // 2d. Entregada con duedate futuro pero updated_at > 14 días -> Warm (R-04)
+        let dt_old = chrono::DateTime::from_timestamp(now - 16 * 86400, 0)
+            .unwrap()
+            .naive_utc();
+        let sub_submitted_old_update = UserSubmission {
+            chat_id: 1,
+            assignment_id: 13,
+            status: Some("submitted".to_string()),
+            graded: false,
+            grade: None,
+            feedback: None,
+            due_override: None,
+            updated_at: Some(dt_old),
+        };
+        assert_eq!(
+            SubmissionTier::classify(now, Some(now + 86400), Some(&sub_submitted_old_update)),
+            SubmissionTier::Warm,
+            "Entregada con updated_at > 14 días debe degradarse a Warm (R-04)"
+        );
+
+        // 3. Tarea NO entregada y sin nota:
+        // 3a. Sin fecha límite (None o 0) -> Warm (R-04)
+        assert_eq!(
+            SubmissionTier::classify(now, None, None),
+            SubmissionTier::Warm,
+            "Tarea sin fecha (None) debe ser Warm en vez de Hot (R-04)"
+        );
+        assert_eq!(
+            SubmissionTier::classify(now, Some(0), None),
+            SubmissionTier::Warm,
+            "Tarea con due=0 debe ser Warm en vez de Hot (R-04)"
+        );
+
+        // 3b. Plazo dentro de 72h -> Hot
+        assert_eq!(
+            SubmissionTier::classify(now, Some(now + 36 * 3600), None),
+            SubmissionTier::Hot
+        );
+
+        // 3c. Plazo entre 72h y 14d -> Warm
+        assert_eq!(
+            SubmissionTier::classify(now, Some(now + 5 * 86400), None),
+            SubmissionTier::Warm
+        );
+
+        // 3d. Plazo > 14d -> Cold
+        assert_eq!(
+            SubmissionTier::classify(now, Some(now + 20 * 86400), None),
+            SubmissionTier::Cold
+        );
+
+        // 3e. Vencida hace < 14d -> Hot
+        assert_eq!(
+            SubmissionTier::classify(now, Some(now - 3 * 86400), None),
+            SubmissionTier::Hot
+        );
+
+        // 3f. Vencida hace > 14d -> Cold
+        assert_eq!(
+            SubmissionTier::classify(now, Some(now - 16 * 86400), None),
+            SubmissionTier::Cold
+        );
+    }
+
+    #[tokio::test]
+    async fn test_r15_admin_breaker_message_technical_text() {
+        let telegram_server = MockServer::start().await;
+
+        let captured_messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_clone = captured_messages.clone();
+
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+            .respond_with(move |req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                if let Some(text) = body.get("text").and_then(|t| t.as_str()) {
+                    captured_clone.lock().unwrap().push(text.to_string());
+                }
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "ok": true,
+                    "result": {
+                        "message_id": 99,
+                        "date": 1700000000,
+                        "chat": { "id": 123456789, "type": "private" },
+                        "text": "admin msg"
+                    }
+                }))
+            })
+            .mount(&telegram_server)
+            .await;
+
+        let config = Arc::new(Config {
+            bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
+            admin_chat_id: 123456789,
+            database_url: "sqlite::memory:".to_string(),
+            max_users_default: 300,
+            bot_tz: chrono_tz::America::Managua,
+            rust_log: "info".to_string(),
+            scan_interval_min: 30,
+        });
+
+        let pool = crate::storage::init(&config).await.unwrap();
+        let bot = create_bot_with_url(
+            &config.bot_token,
+            reqwest::Url::parse(&format!("{}/", telegram_server.uri())).unwrap(),
+        );
+        let moodle = MoodleClient::new("https://mock.uam.ni");
+
+        let worker = ScannerWorker::new(pool, moodle.clone(), bot, config);
+
+        // Simular que el breaker pasa a DOWN (5 fallos)
+        for _ in 0..5 {
+            moodle.breaker().record_failure();
+        }
+        assert_eq!(moodle.breaker().state(), CircuitState::Down);
+
+        // Verificar transición a DOWN
+        worker.check_breaker_transition().await;
+
+        let msgs = captured_messages.lock().unwrap().clone();
+        assert_eq!(
+            msgs.len(),
+            1,
+            "Debe haber enviado exactamente 1 alerta al admin"
+        );
+        assert!(
+            msgs[0].contains("[ADMIN ALERT] Moodle Circuit Breaker: DOWN"),
+            "El mensaje de caída al admin debe ser técnico y no el genérico para alumnos (R-15)"
+        );
+        assert!(
+            !msgs[0].contains("Los servidores de la UAM dieron timeout"),
+            "No debe enviar copy::UAM_MAINTENANCE al admin"
+        );
     }
 }

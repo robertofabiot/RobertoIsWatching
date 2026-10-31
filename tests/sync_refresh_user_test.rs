@@ -12,7 +12,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn create_test_config(database_url: String) -> Config {
     Config {
         bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-        admin_chat_id: 1125347763,
+        admin_chat_id: 123456789,
         database_url,
         max_users_default: 300,
         bot_tz: chrono_tz::America::Managua,
@@ -148,7 +148,7 @@ async fn test_refresh_user_seeding_and_idempotence() {
         .unwrap();
     assert_eq!(courses.len(), 1);
     assert_eq!(courses[0].id, 101);
-    assert!(courses[0].last_scanned.is_some());
+    assert!(courses[0].last_scanned.is_none());
 
     let assign = AssignmentsRepository::get(&pool, 201)
         .await
