@@ -111,40 +111,45 @@ impl MoodleGate {
     }
 
     /// Adquiere un permiso en el gate respetando la prioridad y aplicando el jitter configurado.
+    /// Incluye un tiempo de espera máximo de 30 segundos para evitar bloqueos indefinidos (R-01).
     pub async fn acquire(&self, priority: Priority) -> Result<GatePermit> {
-        let permit = match priority {
-            Priority::Interactive => {
-                let global_permit = self
-                    .global
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| MoodleError::Protocol("Semáforo global cerrado".into()))?;
-                GatePermit {
-                    _permit: PermitInner::Interactive(global_permit),
-                }
-            }
-            Priority::Background => {
-                // Primero se adquiere el permiso de background (máximo 3)
-                let bg_permit =
-                    self.background.clone().acquire_owned().await.map_err(|_| {
-                        MoodleError::Protocol("Semáforo de background cerrado".into())
-                    })?;
-                // Luego se adquiere el permiso global (máximo 4 totales)
-                let global_permit = self
-                    .global
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| MoodleError::Protocol("Semáforo global cerrado".into()))?;
-                GatePermit {
-                    _permit: PermitInner::Background {
-                        _bg: bg_permit,
-                        _global: global_permit,
-                    },
-                }
-            }
+        let fut = async {
+            let res: Result<GatePermit> =
+                match priority {
+                    Priority::Interactive => {
+                        let global_permit =
+                            self.global.clone().acquire_owned().await.map_err(|_| {
+                                MoodleError::Protocol("Semáforo global cerrado".into())
+                            })?;
+                        Ok(GatePermit {
+                            _permit: PermitInner::Interactive(global_permit),
+                        })
+                    }
+                    Priority::Background => {
+                        // Primero se adquiere el permiso de background (máximo 3)
+                        let bg_permit =
+                            self.background.clone().acquire_owned().await.map_err(|_| {
+                                MoodleError::Protocol("Semáforo de background cerrado".into())
+                            })?;
+                        // Luego se adquiere el permiso global (máximo 4 totales)
+                        let global_permit =
+                            self.global.clone().acquire_owned().await.map_err(|_| {
+                                MoodleError::Protocol("Semáforo global cerrado".into())
+                            })?;
+                        Ok(GatePermit {
+                            _permit: PermitInner::Background {
+                                _bg: bg_permit,
+                                _global: global_permit,
+                            },
+                        })
+                    }
+                };
+            res
         };
+
+        let permit: GatePermit = tokio::time::timeout(Duration::from_secs(30), fut)
+            .await
+            .map_err(|_| MoodleError::Timeout)??;
 
         self.apply_jitter().await;
         Ok(permit)

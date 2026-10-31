@@ -230,7 +230,6 @@ impl MoodleClient {
                 Ok(response) => {
                     if response.status().as_u16() == 503 || response.status().is_server_error() {
                         let err = MoodleError::Maintenance;
-                        self.breaker.record_failure();
                         if attempt < self.max_retries {
                             attempt += 1;
                             tracing::warn!(
@@ -239,6 +238,8 @@ impl MoodleClient {
                             );
                             continue;
                         }
+                        // R-14: Contar 1 fallo por operación agotada, no por reintento
+                        self.breaker.record_failure();
                         return Err(err);
                     }
 
@@ -252,7 +253,6 @@ impl MoodleClient {
                         }
                         Err(err) => {
                             if err.is_transient() {
-                                self.breaker.record_failure();
                                 if attempt < self.max_retries {
                                     attempt += 1;
                                     tracing::warn!(
@@ -262,6 +262,8 @@ impl MoodleClient {
                                     );
                                     continue;
                                 }
+                                // R-14: Contar 1 fallo por operación agotada, no por reintento
+                                self.breaker.record_failure();
                             } else {
                                 // Errores no transitorios (ej. invalidtoken, nopermissions):
                                 // Moodle respondió correctamente 200, por lo que no es caída del servicio
@@ -274,7 +276,6 @@ impl MoodleClient {
                 Err(req_err) => {
                     let err = MoodleError::from(req_err);
                     if err.is_transient() {
-                        self.breaker.record_failure();
                         if attempt < self.max_retries {
                             attempt += 1;
                             tracing::warn!(
@@ -284,6 +285,8 @@ impl MoodleClient {
                             );
                             continue;
                         }
+                        // R-14: Contar 1 fallo por operación agotada, no por reintento
+                        self.breaker.record_failure();
                     }
                     return Err(err);
                 }

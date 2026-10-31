@@ -431,3 +431,94 @@ async fn test_request_counters_distinguish_priorities_and_count_retries() {
     assert_eq!(s_after.total(), 0);
     assert_eq!(client.gate().snapshot(), s_after);
 }
+
+#[tokio::test]
+async fn test_login_does_not_deadlock_with_gate_capacity_one() {
+    let server = MockServer::start().await;
+
+    // 1. Mock de /login/token.php
+    Mock::given(method("POST"))
+        .and(path("/login/token.php"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "token": "tok_capacity_one_123"
+        })))
+        .mount(&server)
+        .await;
+
+    // 2. Mock de core_webservice_get_site_info
+    Mock::given(method("POST"))
+        .and(path("/webservice/rest/server.php"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "userid": 777,
+            "fullname": "Estudiante Concurrencia 1"
+        })))
+        .mount(&server)
+        .await;
+
+    // Gate con capacidad global de 1 y background de 1.
+    // Antes del fix R-01, login retenía el permiso del gate durante get_site_info,
+    // produciendo un deadlock irresoluble contra el mismo semáforo global de capacidad 1.
+    let gate = MoodleGate::new(1, 1).without_jitter();
+    let client = MoodleClient::from_builder(
+        MoodleClientBuilder::new()
+            .base_url(server.uri())
+            .gate(gate)
+            .max_retries(0),
+    );
+
+    let login_result = tokio::time::timeout(
+        Duration::from_secs(3),
+        client.login(
+            "21010001",
+            zeroize::Zeroizing::new("SecretPass123".to_string()),
+        ),
+    )
+    .await
+    .expect("Login cayó en deadlock y agotó el timeout de 3 segundos")
+    .expect("Login falló a pesar de mocks válidos");
+
+    assert_eq!(login_result.userid, 777);
+    assert_eq!(login_result.token, "tok_capacity_one_123");
+    assert_eq!(login_result.fullname, "Estudiante Concurrencia 1");
+}
+
+#[tokio::test]
+async fn test_circuit_breaker_counts_retried_operation_as_single_failure() {
+    let server = MockServer::start().await;
+
+    // Responde siempre 503 Service Unavailable
+    Mock::given(method("POST"))
+        .and(path("/webservice/rest/server.php"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+
+    // Breaker con umbral de 2 fallos consecutivos
+    let breaker = CircuitBreaker::new(2, Duration::from_secs(10));
+    let gate = MoodleGate::new(4, 3).without_jitter();
+    // max_retries = 2: cada llamada intentará 3 veces (0, 1, 2)
+    let client = MoodleClient::from_builder(
+        MoodleClientBuilder::new()
+            .base_url(server.uri())
+            .breaker(breaker)
+            .gate(gate)
+            .max_retries(2),
+    );
+
+    assert_eq!(client.breaker().state(), CircuitState::Up);
+
+    // 1ra operación: falla 3 veces en la red, pero debe contar como 1 solo fallo en el breaker (R-14)
+    let res1 = client.get_site_info("tok", Priority::Interactive).await;
+    assert!(matches!(res1, Err(MoodleError::Maintenance)));
+    assert_eq!(
+        client.breaker().state(),
+        CircuitState::Up,
+        "La operación agotada con reintentos contó múltiples fallos en lugar de 1"
+    );
+
+    // 2da operación: tras agotar reintentos, acumula su 2do fallo y abre el circuito (Up -> Down)
+    let res2 = client.get_site_info("tok", Priority::Interactive).await;
+    assert!(matches!(res2, Err(MoodleError::Maintenance)));
+    assert_eq!(client.breaker().state(), CircuitState::Down);
+    assert!(client.breaker().is_open());
+}
