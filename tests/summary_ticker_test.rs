@@ -65,7 +65,7 @@ async fn setup_test_env(test_name: &str) -> TestEnv {
 
     let config = Arc::new(Config {
         bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-        admin_chat_id: 1125347763,
+        admin_chat_id: 123456789,
         database_url,
         max_users_default: 300,
         bot_tz: chrono_tz::America::Managua,

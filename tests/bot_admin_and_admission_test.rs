@@ -51,7 +51,7 @@ async fn test_admin_guard_silently_ignores_non_admin_and_serves_admin() {
                 "message_id": 101,
                 "date": 1700000001,
                 "chat": {
-                    "id": 1125347763,
+                    "id": 123456789,
                     "type": "private"
                 },
                 "text": "admin reply"
@@ -69,7 +69,7 @@ async fn test_admin_guard_silently_ignores_non_admin_and_serves_admin() {
     let db_path = std::env::temp_dir().join(format!("test_admin_guard_{rand_id}.db"));
     let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
 
-    let admin_chat_id = 1125347763;
+    let admin_chat_id = 123456789;
     let config = Arc::new(create_test_config(database_url, admin_chat_id));
     let pool = storage::init(&config).await.expect("Init db failed");
 
@@ -244,7 +244,7 @@ async fn test_admission_decision_matrix_all_permutations() {
         let db_path = std::env::temp_dir().join(format!("test_matrix_{idx}_{rand_id}.db"));
         let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
 
-        let config = create_test_config(database_url, 1125347763);
+        let config = create_test_config(database_url, 123456789);
         let pool = storage::init(&config).await.expect("Init db failed");
 
         // 1. Configurar estado de registro

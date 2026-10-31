@@ -81,7 +81,7 @@ async fn test_login_password_never_reaches_tracing_logs_or_storage() {
                 "message_id": 101,
                 "date": 1700000001,
                 "chat": {
-                    "id": 1125347763,
+                    "id": 123456789,
                     "type": "private"
                 },
                 "text": "ok"
@@ -102,7 +102,7 @@ async fn test_login_password_never_reaches_tracing_logs_or_storage() {
 
     let config = Config {
         bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-        admin_chat_id: 1125347763,
+        admin_chat_id: 123456789,
         database_url,
         max_users_default: 300,
         bot_tz: chrono_tz::America::Managua,
@@ -129,7 +129,7 @@ async fn test_login_password_never_reaches_tracing_logs_or_storage() {
         "message_id": 100,
         "date": 1700000000,
         "chat": {
-            "id": 1125347763,
+            "id": 123456789,
             "type": "private",
             "first_name": "Roberto"
         },
@@ -179,7 +179,7 @@ async fn test_login_password_never_reaches_tracing_logs_or_storage() {
 
     assert_eq!(rows.len(), 1);
     let (chat_id, cif, fullname, wstoken) = &rows[0];
-    assert_eq!(*chat_id, 1125347763);
+    assert_eq!(*chat_id, 123456789);
     assert_eq!(cif, "24014121");
     assert_eq!(fullname, "Estudiante Prueba Seguridad");
     assert_eq!(wstoken, "tok_valid_secret_999");
@@ -223,7 +223,7 @@ async fn test_logout_purges_user_cascades_and_alerts() {
 
     let config = Config {
         bot_token: "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ".to_string(),
-        admin_chat_id: 1125347763,
+        admin_chat_id: 123456789,
         database_url,
         max_users_default: 300,
         bot_tz: chrono_tz::America::Managua,
