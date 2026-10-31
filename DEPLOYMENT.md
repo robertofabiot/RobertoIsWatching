@@ -90,7 +90,35 @@ La unidad systemd (`deploy/robertos-watching.service`) incluye las siguientes di
 - `PrivateTmp=true`: Asigna un `/tmp` y `/var/tmp` aislado e inaccesible para otros procesos.
 - `ReadWritePaths=/opt/robertos-watching`: Única ruta del disco con permisos de escritura (para la base de datos SQLite en modo WAL y respaldos).
 - `Restart=always` y `RestartSec=10`: Resiliencia continua ante caídas accidentales.
-- `TimeoutStopSec=15`: Ventana adecuada para el cierre ordenado de conexiones activas.
+- `TimeoutStopSec=30`: Ventana holgada para el cierre ordenado de workers y cancelación de transacciones activas (R-09).
+
+### Modelo de amenazas y seguridad de `wstoken` (R-13)
+
+Los tokens de la API móvil de Moodle (`wstoken`) se almacenan en la columna `users.wstoken` de la base de datos SQLite para permitir el escaneo periódico de asignaciones y calificaciones en segundo plano sin requerir almacenar las contraseñas de los estudiantes.
+
+- **Capacidades y alcance de `wstoken`**: Un token `wstoken` permite realizar consultas autenticadas a la API REST de Moodle (`core_webservice_*`, `mod_assign_*`, `gradereport_*`) en nombre del alumno. Permite consultar cursos matriculados, entregas, calificaciones emitidas, comentarios docentes y descargar archivos adjuntos. No permite modificar contraseñas ni realizar acciones administrativas.
+- **Protección local en el host de producción**: Mitigado estrictamente mediante defensa en profundidad:
+  - Permisos POSIX restrictivos (`0600` en `.env` y archivos `.db`, `0700` en directorios de respaldos `/opt/robertos-watching/backups`).
+  - Usuario de sistema dedicado y sin login (`robertos` con `/usr/sbin/nologin`).
+  - Endurecimiento con systemd (`ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`, `NoNewPrivileges=true`).
+  - Cero puertos de red entrantes abiertos (comunicación 100 % por polling saliente HTTPS hacia Telegram y Moodle).
+- **Riesgo en respaldos externos y mitigación**: Cualquier respaldo SQLite (`rw-*.db`) generado por `deploy/backup.sh` contiene los tokens `wstoken` en texto claro dentro de la tabla `users`. Si un operador planea transferir o archivar respaldos fuera del servidor (por ejemplo, hacia almacenamiento de objetos en la nube S3/GCS o equipos locales), **es imperativo cifrar los respaldos antes de transferirlos** (por ejemplo con `gpg -c rw-*.db` o mediante `age -r ...`). De lo contrario, una filtración del respaldo expondría las sesiones de Moodle de todos los estudiantes registrados.
+- **Ciclo de vida y revocación de credenciales**:
+  - Al ejecutar `/logout`, el registro del estudiante es eliminado inmediatamente; la restricción `ON DELETE CASCADE` de SQLite purga automáticamente sus registros en `user_courses` y `user_submissions`, y se limpian sus alertas en `sent_alerts`.
+  - Si un usuario cambia de CIF dentro del mismo chat de Telegram (R-03), el sistema elimina en cascada todos los datos y alertas del usuario anterior antes de admitir al nuevo.
+  - Si el estudiante cambia su contraseña en UAM Virtual o invalida sus sesiones móviles desde Moodle, el token `wstoken` queda invalidado upstream de inmediato; el bot detecta el error tipado de Moodle, marca la cuenta como inactiva (`is_active = 0`) y borra el token localmente (`wstoken = ''`).
+
+### Identificación ante Moodle y correo de contacto (R-15)
+
+Todas las peticiones HTTP que el bot envía hacia los servidores de UAM Virtual incluyen el encabezado `User-Agent` institucional definido en `DEFAULT_USER_AGENT`:
+
+```text
+RobertoIsWatchingBot/0.2.0 (UAM Virtual Companion; +contact:roberto@uamv.edu.ni)
+```
+
+- **Transparencia institucional**: Esta cabecera permite a los administradores de red y sistemas de la UAM identificar claramente el tráfico legítimo generado por el bot en sus registros de acceso web (`access.log`), distinguiéndolo de escaneos maliciosos o herramientas no autorizadas.
+- **Buzón de contacto verificado**: Quien despliegue una instancia propia en producción debe verificar que la dirección de correo indicada en el User-Agent (`DEFAULT_USER_AGENT`) corresponda a un buzón real, activo y monitoreado por el operador técnico, de modo que las autoridades de TI del campus puedan contactarle rápidamente ante incidencias de tráfico, mantenimientos programados o coordinaciones técnicas.
+
 
 ## Estrategia de respaldo y recuperación
 
@@ -180,4 +208,5 @@ sudo systemctl start robertos-watching
 - Use `RUST_LOG=info` en producción; reserve `debug` para diagnósticos temporales y revise los logs antes de compartirlos.
 - Mantenga las dependencias al día y audítelas periódicamente con `cargo audit` o `cargo deny`.
 - Respalde la base de datos de forma cifrada y defina una política de retención acorde al propósito del servicio.
+- Verifique que el correo institucional de contacto en el User-Agent (`+contact:...`) sea un buzón operacionalmente monitoreado.
 - Informe a los usuarios qué datos se almacenan (identificador de Telegram, identificador de usuario de Moodle, nombre, cursos, tareas y entregas) y que `/logout` los elimina.

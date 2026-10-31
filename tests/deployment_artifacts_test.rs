@@ -38,7 +38,7 @@ fn test_systemd_service_unit_directives() {
     assert!(content.contains("EnvironmentFile=/opt/robertos-watching/.env"));
     assert!(content.contains("Restart=always"));
     assert!(content.contains("RestartSec=10"));
-    assert!(content.contains("TimeoutStopSec=15"));
+    assert!(content.contains("TimeoutStopSec=30"));
     assert!(content.contains("NoNewPrivileges=true"));
     assert!(content.contains("ProtectSystem=strict"));
     assert!(content.contains("ProtectHome=true"));
