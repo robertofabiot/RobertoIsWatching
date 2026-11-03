@@ -9,7 +9,7 @@ use std::time::Duration;
 
 pub const DEFAULT_BASE_URL: &str = "https://uamvirtual.uam.edu.ni/grado";
 pub const DEFAULT_USER_AGENT: &str =
-    "RobertoIsWatchingBot/0.2.0 (UAM Virtual Companion; +contact:roberto@uamv.edu.ni)";
+    "RobertoIsWatchingBot/1.1.0 (UAM Virtual Companion; +contact:roberto@uamv.edu.ni)";
 pub const CONNECT_TIMEOUT_SECS: u64 = 10;
 pub const REQUEST_TIMEOUT_SECS: u64 = 20;
 

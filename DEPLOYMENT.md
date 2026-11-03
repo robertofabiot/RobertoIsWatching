@@ -113,7 +113,7 @@ Los tokens de la API móvil de Moodle (`wstoken`) se almacenan en la columna `us
 Todas las peticiones HTTP que el bot envía hacia los servidores de UAM Virtual incluyen el encabezado `User-Agent` institucional definido en `DEFAULT_USER_AGENT`:
 
 ```text
-RobertoIsWatchingBot/0.2.0 (UAM Virtual Companion; +contact:roberto@uamv.edu.ni)
+RobertoIsWatchingBot/1.1.0 (UAM Virtual Companion; +contact:roberto@uamv.edu.ni)
 ```
 
 - **Transparencia institucional**: Esta cabecera permite a los administradores de red y sistemas de la UAM identificar claramente el tráfico legítimo generado por el bot en sus registros de acceso web (`access.log`), distinguiéndolo de escaneos maliciosos o herramientas no autorizadas.
