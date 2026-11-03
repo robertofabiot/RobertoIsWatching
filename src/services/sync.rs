@@ -1,5 +1,7 @@
+use crate::bot::{copy, Bot};
 use crate::moodle::gate::Priority;
 use crate::moodle::MoodleClient;
+use crate::services::alerts::{fnv1a_hash, AlertService};
 use crate::storage::assignments::UpsertAssignmentResult;
 use crate::storage::submissions::{SubmissionData, UpsertSubmissionResult};
 use crate::storage::{
@@ -25,7 +27,7 @@ impl RefreshSummary {
     }
 }
 
-/// Pipeline de refresco silencioso por estudiante (A-03, A-04).
+/// Pipeline de refresco por estudiante (A-03, A-04).
 ///
 /// Flujo:
 /// 1. Consulta cursos activos de Moodle con el token del alumno.
@@ -33,14 +35,14 @@ impl RefreshSummary {
 /// 3. Por cada curso, consulta tareas (`mod_assign_get_assignments`) y módulos (`core_course_get_contents`).
 /// 4. Para tareas abiertas o no calificadas, consulta entrega del alumno (`mod_assign_get_submission_status`).
 /// 5. Upsert de `assignments`, `user_submissions` y `modules`.
-/// 6. Actualiza `courses.last_scanned = CURRENT_TIMESTAMP`.
-///
-/// **No emite alertas ni mensajes en Telegram**: Siembra la base de datos en silencio.
+/// 6. Si el curso ya tiene línea base y se provee una instancia de `Bot` (flujo interactivo `/sync`),
+///    despacha alertas de calificación con la clave idempotente `grade:{chat}:{assign}:{hash}`.
 pub async fn refresh_user(
     pool: &SqlitePool,
     moodle: &MoodleClient,
     chat_id: i64,
     priority: Priority,
+    bot: Option<&Bot>,
 ) -> Result<RefreshSummary, anyhow::Error> {
     let user = match UsersRepository::get(pool, chat_id).await? {
         Some(u) if u.is_active && !u.wstoken.is_empty() => u,
@@ -157,16 +159,60 @@ pub async fn refresh_user(
                         )
                         .await?;
 
-                        match sub_res {
-                            UpsertSubmissionResult::Inserted(s) if s.graded => {
-                                summary.new_grades += 1;
-                            }
-                            UpsertSubmissionResult::Updated { changes, .. }
-                                if changes.grade_changed =>
+                        let grade_candidate = match &sub_res {
+                            UpsertSubmissionResult::Inserted(s)
+                                if s.graded || s.grade.is_some() =>
                             {
-                                summary.new_grades += 1;
+                                Some((
+                                    s.grade.clone().unwrap_or_else(|| "Calificada".to_string()),
+                                    s.feedback.clone(),
+                                ))
                             }
-                            _ => {}
+                            UpsertSubmissionResult::Updated {
+                                changes,
+                                submission,
+                            } if (changes.grade_changed || changes.feedback_changed)
+                                && (submission.graded || submission.grade.is_some()) =>
+                            {
+                                Some((
+                                    submission
+                                        .grade
+                                        .clone()
+                                        .unwrap_or_else(|| "Calificada".to_string()),
+                                    submission.feedback.clone(),
+                                ))
+                            }
+                            _ => None,
+                        };
+
+                        if let Some((grade_str, feedback_opt)) = grade_candidate {
+                            summary.new_grades += 1;
+
+                            // Alerta de nueva calificación consumida interactivamente (vía /sync):
+                            // Si el curso ya tiene línea base y se dispone de bot, despachar la alerta
+                            // con la misma clave de idempotencia del scanner para no duplicar ni silenciar.
+                            if has_baseline {
+                                if let Some(bot) = bot {
+                                    let hash_raw = format!(
+                                        "{}|{}",
+                                        grade_str,
+                                        feedback_opt.as_deref().unwrap_or("")
+                                    );
+                                    let hash = fnv1a_hash(&hash_raw);
+                                    let alert_key =
+                                        format!("grade:{}:{}:{}", chat_id, assign.id, hash);
+                                    let msg = copy::alert_new_grade(
+                                        &assign.name,
+                                        &grade_str,
+                                        feedback_opt.as_deref(),
+                                    );
+
+                                    let _ = AlertService::dispatch(
+                                        pool, bot, &alert_key, "grade", chat_id, &msg,
+                                    )
+                                    .await;
+                                }
+                            }
                         }
                     }
                     Err(err) if err.is_token_error() => return Err(err.into()),
@@ -371,7 +417,7 @@ mod tests {
             .unwrap();
 
         // PASO 1: Alumno A ejecuta /sync (refresh_user) cuando hay una tarea nueva (501)
-        let summary_a = refresh_user(&pool, &moodle, 1001, Priority::Interactive)
+        let summary_a = refresh_user(&pool, &moodle, 1001, Priority::Interactive, None)
             .await
             .unwrap();
         assert_eq!(

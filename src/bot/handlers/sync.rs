@@ -119,7 +119,7 @@ pub async fn handle_sync(
         .await?;
 
     // 4. Ejecutar pipeline de refresco interactivo
-    match sync::refresh_user(&pool, &moodle, chat_id, Priority::Interactive).await {
+    match sync::refresh_user(&pool, &moodle, chat_id, Priority::Interactive, Some(&bot)).await {
         Ok(summary) => {
             // Registrar marca de tiempo del escaneo exitoso en el limitador en memoria
             if let Ok(mut cd_map) = SYNC_COOLDOWNS.lock() {
