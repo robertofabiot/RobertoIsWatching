@@ -1,0 +1,13 @@
+# Configuración de auditoría de seguridad de dependencias de Rust (cargo audit)
+
+[advisories]
+# Documentación de excepciones justificadas:
+# RUSTSEC-2026-0173: proc-macro-error2 está oficialmente desmantenido por su autor.
+# - Tipo: Informativo / Dependencia sin mantenimiento (no es una vulnerabilidad de seguridad ejecutable ni explotable).
+# - Grafo de dependencias: teloxide 0.17.0 -> aquamarine 0.6.0 -> proc-macro-error2 2.0.1.
+# - Justificación técnica: teloxide 0.17.0 es actualmente la versión estable más reciente en crates.io.
+#   aquamarine es una macro de documentación mermaid ejecutada únicamente en tiempo de compilación.
+#   No forma parte ni se enlaza en el binario final ejecutable de producción.
+ignore = [
+    "RUSTSEC-2026-0173",
+]
