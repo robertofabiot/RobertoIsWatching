@@ -114,3 +114,16 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+## Historial de versiones
+
+### v1.1.0 (2026-11-03)
+- **Aviso preciso en `/sync`:** Se aclara que las tareas nuevas detectadas se notificarán y mostrarán en `/pendientes` tras el siguiente ciclo del escáner periódico, evitando discrepancias de estado inmediato.
+- **Alertas de calificaciones en `/sync`:** Las notas y comentarios detectados durante la sincronización interactiva se notifican de inmediato vía Telegram y se registran en el historial de alertas para evitar omisiones por el escáner.
+- **Persistencia de cooldown de `/sync`:** Nueva columna `users.last_sync_at` (migración `0002`) para garantizar que la ventana anti-ansiedad de 10 minutos sobreviva a reinicios del bot.
+- **Higiene de CI y seguridad:** Integración de auditoría automatizada con `cargo-audit` en GitHub Actions, documentando excepciones controladas de dependencias de macros no mantenidas (`proc-macro-error2`).
+- **Estado estable:** Transición formal de la documentación y badges del proyecto a estado estable en producción.
+
+### v1.0.0 (2026-10-31)
+- Versión base de lanzamiento inicial en producción, incorporando resoluciones completas de revisión post-producción R-01 a R-15 (concurrencia, límites de tasa atómicos, mitigación de fallos de red y respaldos automatizados).
+
