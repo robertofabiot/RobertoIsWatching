@@ -10,10 +10,11 @@
 
 <p align="center">
   <a href="https://t.me/roberto_is_watching_bot"><img src="https://img.shields.io/badge/Abrir%20en-Telegram-26A5E4?logo=telegram&logoColor=white" alt="Abrir en Telegram"></a>
-  <img src="https://img.shields.io/badge/estado-en%20desarrollo-yellow" alt="Estado: en desarrollo">
+  <img src="https://img.shields.io/badge/estado-estable-brightgreen" alt="Estado: estable">
   <img src="https://img.shields.io/badge/Rust-stable-orange?logo=rust" alt="Rust">
   <img src="https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white" alt="SQLite">
 </p>
+
 
 ---
 
@@ -45,7 +46,8 @@ El bot ya está en funcionamiento: [@roberto_is_watching_bot](https://t.me/rober
 2. Escribe `/login <usuario> <contraseña>` en el chat privado con el bot.
 3. Prueba `/pendientes`, `/notas` o `/resumen`.
 
-Al ser un proyecto en desarrollo, el comportamiento y los comandos pueden cambiar.
+El bot opera de forma estable en producción; los comandos y el comportamiento se mantienen consistentes para tu seguimiento académico diario.
+
 
 ## Comandos
 
