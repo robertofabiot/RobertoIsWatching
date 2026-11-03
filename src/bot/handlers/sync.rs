@@ -131,13 +131,10 @@ pub async fn handle_sync(
                     .parse_mode(ParseMode::Html)
                     .await?;
             } else {
-                let report = format!(
-                    "✅ <b>Sincronización completada:</b>\n\
-                     • <b>{}</b> tareas nuevas detectadas\n\
-                     • <b>{}</b> plazos actualizados\n\
-                     • <b>{}</b> calificaciones nuevas registradas\n\n\
-                     Escribe <code>/pendientes</code> para ver tus entregas.",
-                    summary.new_assignments, summary.updated_assignments, summary.new_grades
+                let report = copy::sync_completed_message(
+                    summary.new_assignments,
+                    summary.updated_assignments,
+                    summary.new_grades,
                 );
                 bot.send_message(msg.chat.id, report)
                     .parse_mode(ParseMode::Html)

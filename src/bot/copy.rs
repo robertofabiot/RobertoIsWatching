@@ -70,6 +70,27 @@ pub fn sync_cooldown_message(minutes: i64) -> String {
     )
 }
 
+pub fn sync_completed_message(
+    new_assignments: usize,
+    updated_assignments: usize,
+    new_grades: usize,
+) -> String {
+    let footer = if new_assignments > 0 {
+        "ℹ️ Las tareas nuevas se avisarán en el próximo ciclo del scanner, y <code>/pendientes</code> las mostrará entonces."
+    } else {
+        "Escribe <code>/pendientes</code> para ver tus entregas."
+    };
+
+    format!(
+        "✅ <b>Sincronización completada:</b>\n\
+         • <b>{}</b> tareas nuevas detectadas\n\
+         • <b>{}</b> plazos actualizados\n\
+         • <b>{}</b> calificaciones nuevas registradas\n\n\
+         {}",
+        new_assignments, updated_assignments, new_grades, footer
+    )
+}
+
 // --- COMANDO /pendientes ---
 pub const PENDIENTES_ALL_CLEAR: &str =
     "👁️ <b>Roberto's watching...</b> y por primera vez no debes nada. Milagro.";
@@ -237,5 +258,16 @@ mod tests {
         assert!(SYNC_NO_CHANGES.contains("tus profesores siguen dormidos"));
         assert!(sync_cooldown_message(5).contains("hace 5 minutos y no hay cambios. Respira."));
         assert!(PENDIENTES_ALL_CLEAR.contains("por primera vez no debes nada. Milagro."));
+    }
+
+    #[test]
+    fn test_sync_completed_message() {
+        let with_new = sync_completed_message(2, 0, 1);
+        assert!(with_new.contains("2</b> tareas nuevas"));
+        assert!(with_new.contains("Las tareas nuevas se avisarán en el próximo ciclo del scanner, y <code>/pendientes</code> las mostrará entonces."));
+
+        let without_new = sync_completed_message(0, 1, 1);
+        assert!(without_new.contains("0</b> tareas nuevas"));
+        assert!(without_new.contains("Escribe <code>/pendientes</code> para ver tus entregas."));
     }
 }
