@@ -69,6 +69,17 @@ async fn test_pragmas_and_schema_are_applied() {
         );
     }
 
+    // 3.1. Verificar columna last_sync_at en tabla users (migración 0002)
+    let user_cols = sqlx::query("PRAGMA table_info(users)")
+        .fetch_all(&pool)
+        .await
+        .expect("Fallo al consultar PRAGMA table_info(users)");
+    let col_names: HashSet<String> = user_cols.into_iter().map(|r| r.get(1)).collect();
+    assert!(
+        col_names.contains("last_sync_at"),
+        "Falta la columna last_sync_at en la tabla users"
+    );
+
     // 4. Verificar existencia de los índices creados
     let rows = sqlx::query("SELECT name FROM sqlite_master WHERE type = 'index'")
         .fetch_all(&pool)

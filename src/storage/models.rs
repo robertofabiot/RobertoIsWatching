@@ -16,6 +16,8 @@ pub struct User {
     pub summary_times: String,
     pub summary_days: String,
     pub created_at: Option<NaiveDateTime>,
+    #[sqlx(default)]
+    pub last_sync_at: Option<NaiveDateTime>,
 }
 
 /// Asignatura de UAM Virtual.
