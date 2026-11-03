@@ -10,10 +10,11 @@
 
 <p align="center">
   <a href="https://t.me/roberto_is_watching_bot"><img src="https://img.shields.io/badge/Abrir%20en-Telegram-26A5E4?logo=telegram&logoColor=white" alt="Abrir en Telegram"></a>
-  <img src="https://img.shields.io/badge/estado-en%20desarrollo-yellow" alt="Estado: en desarrollo">
+  <img src="https://img.shields.io/badge/estado-estable-brightgreen" alt="Estado: estable">
   <img src="https://img.shields.io/badge/Rust-stable-orange?logo=rust" alt="Rust">
   <img src="https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white" alt="SQLite">
 </p>
+
 
 ---
 
@@ -45,7 +46,8 @@ El bot ya está en funcionamiento: [@roberto_is_watching_bot](https://t.me/rober
 2. Escribe `/login <usuario> <contraseña>` en el chat privado con el bot.
 3. Prueba `/pendientes`, `/notas` o `/resumen`.
 
-Al ser un proyecto en desarrollo, el comportamiento y los comandos pueden cambiar.
+El bot opera de forma estable en producción; los comandos y el comportamiento se mantienen consistentes para tu seguimiento académico diario.
+
 
 ## Comandos
 
@@ -112,3 +114,16 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+## Historial de versiones
+
+### v1.1.0 (2026-11-03)
+- **Aviso preciso en `/sync`:** Se aclara que las tareas nuevas detectadas se notificarán y mostrarán en `/pendientes` tras el siguiente ciclo del escáner periódico, evitando discrepancias de estado inmediato.
+- **Alertas de calificaciones en `/sync`:** Las notas y comentarios detectados durante la sincronización interactiva se notifican de inmediato vía Telegram y se registran en el historial de alertas para evitar omisiones por el escáner.
+- **Persistencia de cooldown de `/sync`:** Nueva columna `users.last_sync_at` (migración `0002`) para garantizar que la ventana anti-ansiedad de 10 minutos sobreviva a reinicios del bot.
+- **Higiene de CI y seguridad:** Integración de auditoría automatizada con `cargo-audit` en GitHub Actions, documentando excepciones controladas de dependencias de macros no mantenidas (`proc-macro-error2`).
+- **Estado estable:** Transición formal de la documentación y badges del proyecto a estado estable en producción.
+
+### v1.0.0 (2026-10-31)
+- Versión base de lanzamiento inicial en producción, incorporando resoluciones completas de revisión post-producción R-01 a R-15 (concurrencia, límites de tasa atómicos, mitigación de fallos de red y respaldos automatizados).
+

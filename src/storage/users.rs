@@ -21,7 +21,7 @@ impl UsersRepository {
     /// Obtiene un estudiante por su `chat_id`.
     pub async fn get(pool: &SqlitePool, chat_id: i64) -> Result<Option<User>, sqlx::Error> {
         sqlx::query_as::<_, User>(
-            "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at \
+            "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at, last_sync_at \
              FROM users WHERE chat_id = ?"
         )
         .bind(chat_id)
@@ -32,7 +32,7 @@ impl UsersRepository {
     /// Obtiene un estudiante por su `uam_cif`.
     pub async fn get_by_cif(pool: &SqlitePool, cif: &str) -> Result<Option<User>, sqlx::Error> {
         sqlx::query_as::<_, User>(
-            "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at \
+            "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at, last_sync_at \
              FROM users WHERE uam_cif = ?"
         )
         .bind(cif)
@@ -106,7 +106,7 @@ impl UsersRepository {
         .await?;
 
         let user = sqlx::query_as::<_, User>(
-            "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at \
+            "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at, last_sync_at \
              FROM users WHERE chat_id = ?"
         )
         .bind(chat_id)
@@ -196,7 +196,7 @@ impl UsersRepository {
 
         sqlx::query_as::<_, User>(
             "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, \
-                    summary_enabled, summary_times, summary_days, created_at \
+                    summary_enabled, summary_times, summary_days, created_at, last_sync_at \
              FROM users \
              WHERE is_active = 1 \
                AND summary_enabled = 1 \
@@ -265,11 +265,12 @@ impl UsersRepository {
     ) -> Result<Vec<User>, sqlx::Error> {
         sqlx::query_as::<_, User>(
             "SELECT u.chat_id, u.uam_cif, u.uam_user_id, u.fullname, u.wstoken, \
-             u.is_active, u.inactive_reason, u.summary_enabled, u.summary_times, u.summary_days, u.created_at \
+             u.is_active, u.inactive_reason, u.summary_enabled, u.summary_times, u.summary_days, u.created_at, u.last_sync_at \
              FROM users u \
              INNER JOIN user_courses uc ON u.chat_id = uc.chat_id \
              WHERE uc.course_id = ? AND u.is_active = 1",
         )
+
         .bind(course_id)
         .fetch_all(pool)
         .await
@@ -290,7 +291,7 @@ impl UsersRepository {
 
         // 1. Verificar si el usuario ya es miembro existente (por chat_id)
         let existing_user = sqlx::query_as::<_, User>(
-            "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at \
+            "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at, last_sync_at \
              FROM users WHERE chat_id = ?"
         )
         .bind(chat_id)
@@ -355,7 +356,7 @@ impl UsersRepository {
                 .await?;
 
                 let new_user = sqlx::query_as::<_, User>(
-                    "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at \
+                    "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at, last_sync_at \
                      FROM users WHERE chat_id = ?"
                 )
                 .bind(chat_id)
@@ -386,7 +387,7 @@ impl UsersRepository {
             .await?;
 
             let updated_user = sqlx::query_as::<_, User>(
-                "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at \
+                "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at, last_sync_at \
                  FROM users WHERE chat_id = ?"
             )
             .bind(chat_id)
@@ -456,7 +457,7 @@ impl UsersRepository {
         .await?;
 
         let new_user = sqlx::query_as::<_, User>(
-            "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at \
+            "SELECT chat_id, uam_cif, uam_user_id, fullname, wstoken, is_active, inactive_reason, summary_enabled, summary_times, summary_days, created_at, last_sync_at \
              FROM users WHERE chat_id = ?"
         )
         .bind(chat_id)
@@ -465,5 +466,19 @@ impl UsersRepository {
 
         tx.commit().await?;
         Ok(AdmissionResult::Admitted(new_user))
+    }
+
+    /// Actualiza la marca de tiempo del último escaneo interactivo (/sync) exitoso (R-15, v1.1.0).
+    pub async fn touch_last_sync(pool: &SqlitePool, chat_id: i64) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE users SET last_sync_at = CURRENT_TIMESTAMP WHERE chat_id = ?")
+            .bind(chat_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Alias conveniente de `touch_last_sync` para persistir la marca de tiempo de sincronización.
+    pub async fn touch_sync(pool: &SqlitePool, chat_id: i64) -> Result<(), sqlx::Error> {
+        Self::touch_last_sync(pool, chat_id).await
     }
 }

@@ -127,6 +127,7 @@ pub async fn handle_login(
                 &moodle,
                 user.chat_id,
                 Priority::Interactive,
+                None,
             )
             .await
             {

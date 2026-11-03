@@ -31,6 +31,11 @@ jobs:
       - name: Run unit tests
         run: cargo test --verbose
 
+      - name: Security audit (cargo audit)
+        uses: rustsec/audit-check@v1.4.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Verify zero OpenSSL dependency (A-01)
         run: |
           if cargo tree -i openssl-sys 2>&1 | grep -q "did not match"; then
@@ -39,3 +44,5 @@ jobs:
             echo "❌ Error: openssl-sys fue detectado en el grafo de dependencias"
             exit 1
           fi
+
+

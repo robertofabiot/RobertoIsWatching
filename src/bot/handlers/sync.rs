@@ -19,7 +19,7 @@ pub(crate) static ACTIVE_SYNCS: LazyLock<Mutex<HashSet<i64>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
 /// Registro en memoria del último escaneo interactivo completado por chat_id (R-15).
-pub(crate) static SYNC_COOLDOWNS: LazyLock<Mutex<HashMap<i64, Instant>>> =
+pub static SYNC_COOLDOWNS: LazyLock<Mutex<HashMap<i64, Instant>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Guardián RAII para asegurar que el chat_id se libere de ACTIVE_SYNCS al finalizar o fallar.
@@ -96,7 +96,24 @@ pub async fn handle_sync(
         return Ok(());
     }
 
-    // 2. Comprobar cooldown anti-ansiedad de 10 minutos desde SQLite (escaneo de fondo previo) (A-08, RF-08)
+    // 2. Comprobar cooldown anti-ansiedad persistente en SQLite (users.last_sync_at) resistente a reinicios (R-15, v1.1.0)
+    if let Some(user_record) = &user {
+        if let Some(last_sync) = user_record.last_sync_at {
+            let now_utc = Utc::now().naive_utc();
+            let elapsed = now_utc.signed_duration_since(last_sync);
+
+            if elapsed.num_seconds() >= 0 && elapsed.num_seconds() < SYNC_COOLDOWN_SECONDS {
+                let minutes_ago = elapsed.num_minutes().max(1);
+                let cooldown_msg = copy::sync_cooldown_message(minutes_ago);
+                bot.send_message(msg.chat.id, cooldown_msg)
+                    .parse_mode(ParseMode::Html)
+                    .await?;
+                return Ok(());
+            }
+        }
+    }
+
+    // 3. Comprobar cooldown anti-ansiedad de 10 minutos desde SQLite (escaneo de fondo previo) (A-08, RF-08)
     let latest_scan = CoursesRepository::latest_scan_for_user(&pool, chat_id).await?;
 
     if let Some(last_dt) = latest_scan {
@@ -113,15 +130,16 @@ pub async fn handle_sync(
         }
     }
 
-    // 3. Cooldown superado o primer escaneo: Enviar mensaje de búsqueda
+    // 4. Cooldown superado o primer escaneo: Enviar mensaje de búsqueda
     bot.send_message(msg.chat.id, copy::SYNC_SCANNING)
         .parse_mode(ParseMode::Html)
         .await?;
 
-    // 4. Ejecutar pipeline de refresco interactivo
-    match sync::refresh_user(&pool, &moodle, chat_id, Priority::Interactive).await {
+    // 5. Ejecutar pipeline de refresco interactivo
+    match sync::refresh_user(&pool, &moodle, chat_id, Priority::Interactive, Some(&bot)).await {
         Ok(summary) => {
-            // Registrar marca de tiempo del escaneo exitoso en el limitador en memoria
+            // Registrar marca de tiempo del escaneo exitoso en SQLite (resistente a reinicios) y en memoria
+            let _ = UsersRepository::touch_last_sync(&pool, chat_id).await;
             if let Ok(mut cd_map) = SYNC_COOLDOWNS.lock() {
                 cd_map.insert(chat_id, Instant::now());
             }
@@ -131,13 +149,10 @@ pub async fn handle_sync(
                     .parse_mode(ParseMode::Html)
                     .await?;
             } else {
-                let report = format!(
-                    "✅ <b>Sincronización completada:</b>\n\
-                     • <b>{}</b> tareas nuevas detectadas\n\
-                     • <b>{}</b> plazos actualizados\n\
-                     • <b>{}</b> calificaciones nuevas registradas\n\n\
-                     Escribe <code>/pendientes</code> para ver tus entregas.",
-                    summary.new_assignments, summary.updated_assignments, summary.new_grades
+                let report = copy::sync_completed_message(
+                    summary.new_assignments,
+                    summary.updated_assignments,
+                    summary.new_grades,
                 );
                 bot.send_message(msg.chat.id, report)
                     .parse_mode(ParseMode::Html)

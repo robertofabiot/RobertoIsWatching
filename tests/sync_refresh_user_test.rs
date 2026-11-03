@@ -131,7 +131,7 @@ async fn test_refresh_user_seeding_and_idempotence() {
     .unwrap();
 
     // --- PRIMERA EJECUCIÓN (Siembra Silenciosa / Línea Base) ---
-    let summary1 = refresh_user(&pool, &moodle, chat_id, Priority::Interactive)
+    let summary1 = refresh_user(&pool, &moodle, chat_id, Priority::Interactive, None)
         .await
         .expect("refresh_user debe ser exitoso");
 
@@ -180,7 +180,7 @@ async fn test_refresh_user_seeding_and_idempotence() {
     );
 
     // --- SEGUNDA EJECUCIÓN (Idempotencia) ---
-    let summary2 = refresh_user(&pool, &moodle, chat_id, Priority::Interactive)
+    let summary2 = refresh_user(&pool, &moodle, chat_id, Priority::Interactive, None)
         .await
         .expect("Segunda ejecución de refresh_user debe ser exitosa");
 

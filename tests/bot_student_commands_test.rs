@@ -155,6 +155,111 @@ async fn test_sync_cooldown_boundary_9m59s_vs_10m00s() {
 }
 
 #[tokio::test]
+async fn test_sync_cooldown_survives_service_restart_via_users_last_sync_at() {
+    let tg_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "ok": true,
+            "result": {
+                "message_id": 102,
+                "date": 1700000002,
+                "chat": { "id": 77702, "type": "private" },
+                "text": "reply"
+            }
+        })))
+        .mount(&tg_server)
+        .await;
+
+    let moodle_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/webservice/rest/server.php"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .mount(&moodle_server)
+        .await;
+
+    let tg_url = tg_server.uri().parse::<reqwest::Url>().unwrap();
+    let bot: Bot = teloxide::Bot::new("123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ")
+        .set_api_url(tg_url)
+        .throttle(Limits::default());
+    let moodle = MoodleClient::new(moodle_server.uri());
+
+    let rand_id: u64 = rand::random();
+    let db_path = std::env::temp_dir().join(format!("test_cooldown_restart_{rand_id}.db"));
+    let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+
+    let config = create_test_config(database_url);
+    let pool = storage::init(&config).await.expect("Init db failed");
+
+    let chat_id = 77702;
+    UsersRepository::upsert_login(
+        &pool,
+        chat_id,
+        "24017702",
+        102,
+        "Restart Student",
+        "tok_restart",
+    )
+    .await
+    .unwrap();
+    CoursesRepository::upsert_course(&pool, 112, "Física II", Some("FIS102"))
+        .await
+        .unwrap();
+    CoursesRepository::link_user(&pool, chat_id, 112)
+        .await
+        .unwrap();
+
+    // 1. Simular escaneo interactivo previo completado hace 3 minutos:
+    // Persistido en users.last_sync_at (courses.last_scanned nace NULL para aislar users.last_sync_at)
+    sqlx::query(
+        "UPDATE users SET last_sync_at = datetime('now', '-180 seconds') WHERE chat_id = ?",
+    )
+    .bind(chat_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 2. Simular REINICIO completo del servicio limpiando el estado en memoria
+    {
+        let mut cd_map = robertos_watching_bot::bot::handlers::sync::SYNC_COOLDOWNS
+            .lock()
+            .unwrap();
+        cd_map.clear();
+    }
+
+    // 3. Ejecutar /sync tras reinicio: debe ser rechazado por el cooldown persistido en SQLite
+    let msg = make_msg(chat_id, "/sync");
+    let res = handle_sync(bot.clone(), msg.clone(), pool.clone(), moodle.clone()).await;
+    assert!(res.is_ok());
+
+    let moodle_reqs = moodle_server.received_requests().await.unwrap();
+    assert_eq!(
+        moodle_reqs.len(),
+        0,
+        "Tras reinicio, el cooldown en users.last_sync_at debe impedir peticiones a Moodle"
+    );
+
+    // 4. Simular que transcurrieron 11 minutos (> 10 min)
+    sqlx::query(
+        "UPDATE users SET last_sync_at = datetime('now', '-660 seconds') WHERE chat_id = ?",
+    )
+    .bind(chat_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let res_expired = handle_sync(bot.clone(), msg, pool.clone(), moodle.clone()).await;
+    assert!(res_expired.is_ok());
+
+    let moodle_reqs_after = moodle_server.received_requests().await.unwrap();
+    assert!(
+        !moodle_reqs_after.is_empty(),
+        "Al transcurrir más de 10 minutos, /sync debe permitir la sincronización"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
 async fn test_config_callbacks_and_validation() {
     let tg_server = MockServer::start().await;
     Mock::given(method("POST"))

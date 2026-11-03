@@ -424,6 +424,7 @@ async fn test_sync_does_not_silence_scanner_alerts_for_other_students() {
         &moodle,
         3001,
         robertos_watching_bot::moodle::gate::Priority::Interactive,
+        None,
     )
     .await
     .expect("Fallo al ejecutar /sync para Alumno A");
@@ -456,6 +457,229 @@ async fn test_sync_does_not_silence_scanner_alerts_for_other_students() {
     assert!(
         alert_b_claimed,
         "R-02: El Alumno B debió recibir la alerta de la nueva tarea a pesar de que Alumno A hizo /sync antes"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[tokio::test]
+async fn test_sync_with_new_grade_dispatches_exactly_one_grade_alert() {
+    let moodle_server = MockServer::start().await;
+    let telegram_server = MockServer::start().await;
+
+    let grade_alerts_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let gac = grade_alerts_count.clone();
+
+    Mock::given(method("POST"))
+        .and(wiremock::matchers::path_regex(r"(?i).*sendmessage"))
+        .respond_with(move |req: &wiremock::Request| {
+            let body = String::from_utf8_lossy(&req.body);
+            if body.contains("calificaron") || body.contains("grades") || body.contains("Nota") {
+                gac.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "ok": true,
+                "result": {
+                    "message_id": 999,
+                    "date": 1700000000,
+                    "chat": { "id": 4001, "type": "private" },
+                    "text": "alerta"
+                }
+            }))
+        })
+        .mount(&telegram_server)
+        .await;
+
+    // Mock core_enrol_get_users_courses
+    Mock::given(method("POST"))
+        .and(path("/webservice/rest/server.php"))
+        .and(wiremock::matchers::body_string_contains(
+            "wsfunction=core_enrol_get_users_courses",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            {
+                "id": 801,
+                "fullname": "Bases de Datos Avanzadas",
+                "shortname": "BDA"
+            }
+        ])))
+        .mount(&moodle_server)
+        .await;
+
+    // Mock mod_assign_get_assignments
+    Mock::given(method("POST"))
+        .and(path("/webservice/rest/server.php"))
+        .and(wiremock::matchers::body_string_contains(
+            "wsfunction=mod_assign_get_assignments",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "courses": [{
+                "id": 801,
+                "assignments": [
+                    {
+                        "id": 901,
+                        "cmid": 1001,
+                        "course": 801,
+                        "name": "Práctica 1 - Triggers",
+                        "duedate": 1800000000
+                    }
+                ]
+            }]
+        })))
+        .mount(&moodle_server)
+        .await;
+
+    // Mock core_course_get_contents
+    Mock::given(method("POST"))
+        .and(path("/webservice/rest/server.php"))
+        .and(wiremock::matchers::body_string_contains(
+            "wsfunction=core_course_get_contents",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .mount(&moodle_server)
+        .await;
+
+    let has_grade = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hg = has_grade.clone();
+
+    // Mock mod_assign_get_submission_status
+    Mock::given(method("POST"))
+        .and(path("/webservice/rest/server.php"))
+        .and(wiremock::matchers::body_string_contains(
+            "wsfunction=mod_assign_get_submission_status",
+        ))
+        .respond_with(move |_req: &wiremock::Request| {
+            if hg.load(std::sync::atomic::Ordering::SeqCst) {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "lastattempt": {
+                        "submission": {
+                            "id": 2001,
+                            "status": "submitted"
+                        },
+                        "graded": true,
+                        "gradingstatus": "graded"
+                    },
+                    "feedback": {
+                        "gradefordisplay": "95 / 100",
+                        "grade": {
+                            "grade": "95.00000"
+                        },
+                        "plugins": [
+                            {
+                                "type": "comments",
+                                "name": "Comentarios de retroalimentación",
+                                "editorfields": [
+                                    {
+                                        "name": "comments",
+                                        "text": "Excelente implementación de triggers"
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }))
+            } else {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "lastattempt": {
+                        "submission": {
+                            "id": 2001,
+                            "status": "submitted"
+                        },
+                        "graded": false,
+                        "gradingstatus": "notgraded"
+                    }
+                }))
+            }
+        })
+        .mount(&moodle_server)
+        .await;
+
+    let rand_id: u64 = rand::random();
+    let db_path = std::env::temp_dir().join(format!("test_grade_alert_sync_{rand_id}.db"));
+    let database_url = format!("sqlite://{}?mode=rwc", db_path.display());
+    let config = Arc::new(create_test_config(database_url));
+
+    let pool = robertos_watching_bot::storage::init(&config).await.unwrap();
+    let bot = create_bot_with_url(
+        &config.bot_token,
+        reqwest::Url::parse(&format!("{}/", telegram_server.uri())).unwrap(),
+    );
+    let moodle = MoodleClient::new(moodle_server.uri());
+
+    // Crear curso y alumno con línea base previa en el curso
+    CoursesRepository::upsert_course(&pool, 801, "Bases de Datos Avanzadas", Some("BDA"))
+        .await
+        .unwrap();
+    CoursesRepository::touch_scanned(&pool, 801).await.unwrap();
+
+    UsersRepository::upsert_login(
+        &pool,
+        4001,
+        "24014001",
+        401,
+        "Alumno Notas",
+        "token_grade_student",
+    )
+    .await
+    .unwrap();
+    CoursesRepository::link_user(&pool, 4001, 801)
+        .await
+        .unwrap();
+
+    // Establecer la tarea en la BD para que exista en el curso
+    AssignmentsRepository::upsert(
+        &pool,
+        901,
+        Some(1001),
+        801,
+        "Práctica 1 - Triggers",
+        Some(1800000000),
+        None,
+    )
+    .await
+    .unwrap();
+
+    // 1. Docente publica calificación nueva en Moodle
+    has_grade.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // 2. Alumno ejecuta /sync (refresh_user) con Some(&bot)
+    let sync_summary = robertos_watching_bot::services::sync::refresh_user(
+        &pool,
+        &moodle,
+        4001,
+        robertos_watching_bot::moodle::gate::Priority::Interactive,
+        Some(&bot),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        sync_summary.new_grades, 1,
+        "refresh_user debe registrar 1 calificación nueva"
+    );
+
+    // Verificar que el alumno recibió exactamente 1 alerta de nota por Telegram
+    assert_eq!(
+        grade_alerts_count.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "El alumno debe haber recibido exactamente 1 alerta de nota tras /sync"
+    );
+
+    // 3. El background scanner corre su ciclo
+    let worker = ScannerWorker::new(pool.clone(), moodle.clone(), bot.clone(), config.clone())
+        .with_delays(Duration::from_millis(50), Duration::from_millis(10));
+    let scan_summary = worker.run_scan_cycle().await.unwrap();
+
+    assert_eq!(
+        scan_summary.alerts_grade, 0,
+        "El scanner no debe duplicar la alerta de nota ya consumida y enviada"
+    );
+
+    // El contador de alertas de nota enviadas sigue siendo exactamente 1
+    assert_eq!(
+        grade_alerts_count.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "El número total de alertas de nota debe permanecer exactamente en 1"
     );
 
     let _ = std::fs::remove_file(&db_path);

@@ -1,0 +1,23 @@
+# Configuración de auditoría de seguridad de dependencias de Rust (cargo audit)
+
+[advisories]
+# Documentación de excepciones justificadas:
+#
+# 1. RUSTSEC-2026-0173: proc-macro-error2 está oficialmente desmantenido por su autor.
+# - Tipo: Informativo / Dependencia sin mantenimiento (no es una vulnerabilidad de seguridad ejecutable ni explotable).
+# - Grafo de dependencias: teloxide 0.17.0 -> aquamarine 0.6.0 -> proc-macro-error2 2.0.1.
+# - Justificación técnica: teloxide 0.17.0 es actualmente la versión estable más reciente en crates.io.
+#   aquamarine es una macro de documentación mermaid ejecutada únicamente en tiempo de compilación.
+#   No forma parte ni se enlaza en el binario final ejecutable de producción.
+#
+# 2. RUSTSEC-2023-0071: Marvin Attack en rsa 0.9.10.
+# - Tipo: Vulnerabilidad de canal lateral (timing attack) en operaciones de descifrado RSA PKCS#1 v1.5.
+# - Grafo de dependencias: sqlx 0.8 -> sqlx-macros -> sqlx-mysql -> rsa 0.9.10.
+# - Justificación técnica: Roberto's Watching utiliza exclusivamente SQLite como motor de persistencia.
+#   La dependencia sqlx-mysql es arrastrada transitivamente por las macros de sqlx en tiempo de compilación.
+#   El crate rsa nunca se ejecuta en producción ni maneja claves privadas o descifrado de red en el bot.
+#   No existe versión parcheada de rsa 0.9.x disponible upstream (issue RustCrypto/RSA#626).
+ignore = [
+    "RUSTSEC-2026-0173",
+    "RUSTSEC-2023-0071",
+]
