@@ -1,3 +1,8 @@
+// Rust 1.100 marca como `unreachable_code` una llamada dentro del código que genera el derive
+// `BotCommands` de teloxide 0.17. Ese código se genera fuera del enum, así que un `allow` en el
+// enum no lo alcanza; se permite en este módulo, que solo declara los comandos.
+#![allow(unreachable_code)]
+
 use crate::bot::Bot;
 use teloxide::prelude::*;
 use teloxide::utils::command::BotCommands;

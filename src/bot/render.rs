@@ -102,7 +102,7 @@ pub async fn render_daily_summary(
             ""
         };
         let ext_tag = if item.is_extended() {
-            " <i>[extensión]</i>"
+            " <i>(extensión de plazo)</i>"
         } else {
             ""
         };
@@ -130,7 +130,7 @@ pub async fn render_daily_summary(
         for g in graded.into_iter().take(2) {
             let grade_str = g.grade.as_deref().unwrap_or("Calificado");
             items.push(format!(
-                "🎯 <i>Nota reciente:</i> <b>{}</b> en <i>{}</i> (<b>{}</b>)",
+                "🎯 <i>Nota reciente:</i> <b>{}</b>\n   📚 <i>{}</i>\n   📊 Nota: <b>{}</b>",
                 crate::bot::copy::escape_html(&g.assignment_name),
                 crate::bot::copy::escape_html(&g.course_name),
                 crate::bot::copy::escape_html(grade_str)

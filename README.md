@@ -117,6 +117,12 @@ cargo test
 
 ## Historial de versiones
 
+### v1.1.1 (2026-11-20)
+- **Notas legibles:** Las calificaciones ya no muestran textos como `0&nbsp;/&nbsp;30`; se ven como `0 / 30` en `/notas`, `/resumen` y las alertas. Las notas ya guardadas se corrigen al actualizar, sin reenviar alertas.
+- **Entidades HTML en comentarios:** Los comentarios de los docentes decodifican acentos, signos y entidades numéricas correctamente.
+- **Mensajes más claros:** Las alertas (tarea nueva, material nuevo, plazos de 24 h y 2 h, nota nueva) y la nota reciente de `/resumen` muestran cada dato en su propia línea, sin corchetes. En `/cursos` el código del curso va en una línea aparte.
+- **Menos espacio en blanco:** `/pendientes`, `/notas` y `/cursos` ya no dejan dos líneas vacías antes del primer elemento.
+
 ### v1.1.0 (2026-11-03)
 - **Aviso preciso en `/sync`:** Se aclara que las tareas nuevas detectadas se notificarán y mostrarán en `/pendientes` tras el siguiente ciclo del escáner periódico, evitando discrepancias de estado inmediato.
 - **Alertas de calificaciones en `/sync`:** Las notas y comentarios detectados durante la sincronización interactiva se notifican de inmediato vía Telegram y se registran en el historial de alertas para evitar omisiones por el escáner.
