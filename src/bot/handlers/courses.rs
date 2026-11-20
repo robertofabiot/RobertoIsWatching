@@ -37,7 +37,7 @@ pub async fn handle_cursos(bot: Bot, msg: Message, pool: SqlitePool) -> Result<(
             let short = c
                 .shortname
                 .filter(|s| !s.trim().is_empty())
-                .map(|s| format!(" [<code>{}</code>]", copy::escape_html(&s)))
+                .map(|s| format!("\n   🏷️ <code>{}</code>", copy::escape_html(&s)))
                 .unwrap_or_default();
             format!("📚 <b>{}</b>{}", copy::escape_html(&c.fullname), short)
         })
