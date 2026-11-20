@@ -117,9 +117,16 @@ pub fn cursos_header(count: usize) -> String {
 }
 
 // --- ALERTAS PROACTIVAS Y RESÚMENES ---
+// Formato común: encabezado en negrita, una línea de contexto y, separado por una línea en
+// blanco, un bloque con un dato por línea (mismo estilo que /pendientes y /notas).
+
 pub fn alert_new_assignment(task: &str, course: &str, due_date: &str) -> String {
     format!(
-        "📢 <b>Roberto's watching a new assignment.</b> Tu profesor acaba de subir <b>[{}]</b> en <b>[{}]</b>. Vence el {}.",
+        "📢 <b>Roberto's watching a new assignment.</b>\n\
+         Tu profesor acaba de subir una tarea:\n\n\
+         📝 <b>{}</b>\n\
+         📚 <i>{}</i>\n\
+         ⏰ Vence: <b>{}</b>",
         escape_html(task),
         escape_html(course),
         escape_html(due_date)
@@ -128,10 +135,13 @@ pub fn alert_new_assignment(task: &str, course: &str, due_date: &str) -> String 
 
 pub fn alert_new_material(material: &str, course: &str, section: Option<&str>) -> String {
     let section_str = section
-        .map(|s| format!(" en la sección <i>{}</i>", escape_html(s)))
+        .map(|s| format!("\n🗂️ Sección: <i>{}</i>", escape_html(s)))
         .unwrap_or_default();
     format!(
-        "📚 <b>Roberto's watching new materials.</b> Tu profesor acaba de subir <b>[{}]</b> en <b>[{}]</b>{}.",
+        "📚 <b>Roberto's watching new materials.</b>\n\
+         Tu profesor acaba de subir material nuevo:\n\n\
+         📄 <b>{}</b>\n\
+         📚 <i>{}</i>{}",
         escape_html(material),
         escape_html(course),
         section_str
@@ -140,16 +150,22 @@ pub fn alert_new_material(material: &str, course: &str, section: Option<&str>) -
 
 pub fn alert_deadline_24h(task: &str) -> String {
     format!(
-        "⏰ <b>Roberto's watching the clock (Quedan 24h).</b> Te queda exactamente 1 día para entregar <b>[{}]</b>. Ve abriendo el documento.",
+        "⏰ <b>Roberto's watching the clock (Quedan 24h).</b>\n\
+         Te queda exactamente 1 día para entregar:\n\n\
+         📝 <b>{}</b>\n\n\
+         Ve abriendo el documento.",
         escape_html(task)
     )
 }
 
 pub fn alert_deadline_2h(task: &str, due_time: &str) -> String {
     format!(
-        "🚨 <b>ROBERTO'S WATCHING YOU PANIC (Quedan 2h).</b> Si no subes <b>[{}]</b> antes de las {}, se cierra la plataforma. Corre.",
-        escape_html(task),
-        escape_html(due_time)
+        "🚨 <b>ROBERTO'S WATCHING YOU PANIC (Quedan 2h).</b>\n\
+         Si no subes esto antes de las <b>{}</b>, se cierra la plataforma:\n\n\
+         📝 <b>{}</b>\n\n\
+         Corre.",
+        escape_html(due_time),
+        escape_html(task)
     )
 }
 
@@ -157,11 +173,14 @@ pub fn alert_new_grade(task: &str, grade: &str, feedback: Option<&str>) -> Strin
     let fb_str = feedback
         .map(clean_feedback_for_html)
         .filter(|s| !s.is_empty())
-        .map(|s| format!("\nComentario: <i>{}</i>", s))
+        .map(|s| format!("\n💬 Comentario: <i>{}</i>", s))
         .unwrap_or_default();
 
     format!(
-        "📝 <b>Roberto's watching your grades.</b> Ya calificaron <b>[{}]</b>. Nota: <b>{}</b>.{}",
+        "🎯 <b>Roberto's watching your grades.</b>\n\
+         Ya calificaron una de tus entregas:\n\n\
+         📝 <b>{}</b>\n\
+         📊 Nota: <b>{}</b>{}",
         escape_html(task),
         escape_html(grade),
         fb_str
@@ -239,6 +258,34 @@ mod tests {
             clean_feedback_for_html(with_special),
             "Muy bien &amp; felicitaciones"
         );
+    }
+
+    #[test]
+    fn test_alerts_use_line_breaks_without_square_brackets() {
+        let alerts = [
+            alert_new_assignment("Tarea 8", "MTM0120 - ALGEBRA LINEAL", "20/11/2026 13:00"),
+            alert_new_material("Presentación", "EDA0125 - EDUCACION AMBIENTAL", Some("S14")),
+            alert_new_material("Presentación", "EDA0125 - EDUCACION AMBIENTAL", None),
+            alert_deadline_24h("Tarea 8"),
+            alert_deadline_2h("Tarea 8", "13:00"),
+            alert_new_grade("Tarea 7", "12 / 15", Some("<p>Buen trabajo</p>")),
+        ];
+
+        for alert in &alerts {
+            assert!(!alert.contains('['), "Alerta con corchetes: {alert}");
+            assert!(!alert.contains(']'), "Alerta con corchetes: {alert}");
+            assert!(
+                alert.contains("</b>\n"),
+                "El encabezado debe ir en su propia línea: {alert}"
+            );
+        }
+
+        let assignment = &alerts[0];
+        assert!(assignment.contains("\n\n📝 <b>Tarea 8</b>\n📚 <i>MTM0120 - ALGEBRA LINEAL</i>\n"));
+        assert!(alerts[1].contains("\n🗂️ Sección: <i>S14</i>"));
+        assert!(!alerts[2].contains("Sección"));
+        assert!(alerts[4].contains("antes de las <b>13:00</b>"));
+        assert!(alerts[5].contains("📊 Nota: <b>12 / 15</b>\n💬 Comentario: <i>Buen trabajo</i>"));
     }
 
     #[test]
