@@ -86,15 +86,7 @@ pub fn strip_html_to_plain_text(html: &str) -> String {
         }
     }
 
-    // Decodificar entidades comunes
-    clean = clean
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'");
+    clean = decode_html_entities(&clean);
 
     // Limpiar saltos de línea repetidos y recortar espacios
     let lines: Vec<&str> = clean
@@ -103,6 +95,92 @@ pub fn strip_html_to_plain_text(html: &str) -> String {
         .filter(|l| !l.is_empty())
         .collect();
     lines.join("\n")
+}
+
+/// Decodifica entidades HTML con nombre (`&nbsp;`, `&aacute;`) y numéricas (`&#160;`, `&#xA0;`)
+/// en una sola pasada, para que `&amp;lt;` quede como `&lt;` y no como `<`.
+/// El espacio de no separación se convierte en espacio normal. Las entidades desconocidas se
+/// dejan tal cual.
+pub fn decode_html_entities(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut rest = input;
+
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp + 1..];
+
+        // Las entidades válidas son cortas; limitar la búsqueda del ';' evita falsos positivos
+        let decoded = after
+            .char_indices()
+            .take(12)
+            .find(|&(_, c)| c == ';')
+            .and_then(|(semi, _)| decode_entity(&after[..semi]).map(|ch| (ch, semi)));
+
+        match decoded {
+            Some((ch, semi)) => {
+                out.push(if ch == '\u{a0}' { ' ' } else { ch });
+                rest = &after[semi + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = after;
+            }
+        }
+    }
+
+    out.push_str(rest);
+    out
+}
+
+fn decode_entity(name: &str) -> Option<char> {
+    if let Some(num) = name.strip_prefix('#') {
+        let code = match num.strip_prefix(['x', 'X']) {
+            Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+            None => num.parse::<u32>().ok()?,
+        };
+        return char::from_u32(code);
+    }
+
+    let ch = match name {
+        "nbsp" => '\u{a0}',
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        "aacute" => 'á',
+        "eacute" => 'é',
+        "iacute" => 'í',
+        "oacute" => 'ó',
+        "uacute" => 'ú',
+        "Aacute" => 'Á',
+        "Eacute" => 'É',
+        "Iacute" => 'Í',
+        "Oacute" => 'Ó',
+        "Uacute" => 'Ú',
+        "ntilde" => 'ñ',
+        "Ntilde" => 'Ñ',
+        "uuml" => 'ü',
+        "Uuml" => 'Ü',
+        "iexcl" => '¡',
+        "iquest" => '¿',
+        "ordm" => 'º',
+        "ordf" => 'ª',
+        "deg" => '°',
+        "laquo" => '«',
+        "raquo" => '»',
+        "ndash" => '–',
+        "mdash" => '—',
+        "hellip" => '…',
+        "lsquo" => '‘',
+        "rsquo" => '’',
+        "ldquo" => '“',
+        "rdquo" => '”',
+        "bull" => '•',
+        "middot" => '·',
+        _ => return None,
+    };
+    Some(ch)
 }
 
 impl MoodleClient {
@@ -196,6 +274,21 @@ mod tests {
         let html_entities = "<p>Puntaje:&nbsp;&gt;= 90% &amp; &lt; 100%</p>";
         let plain_entities = strip_html_to_plain_text(html_entities);
         assert_eq!(plain_entities, "Puntaje: >= 90% & < 100%");
+    }
+
+    #[test]
+    fn test_decode_html_entities() {
+        assert_eq!(
+            decode_html_entities("Sesi&oacute;n &iquest;lista? &ndash; 100&#37;"),
+            "Sesión ¿lista? – 100%"
+        );
+        // Una sola pasada: el &amp; no se vuelve a decodificar
+        assert_eq!(decode_html_entities("&amp;lt;b&amp;gt;"), "&lt;b&gt;");
+        // Entidades desconocidas o sin ';' quedan tal cual
+        assert_eq!(
+            decode_html_entities("A & B &foo; &copy"),
+            "A & B &foo; &copy"
+        );
     }
 
     #[test]
