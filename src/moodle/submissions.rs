@@ -97,6 +97,15 @@ pub fn strip_html_to_plain_text(html: &str) -> String {
     lines.join("\n")
 }
 
+/// Normaliza la calificación que muestra Moodle (`gradefordisplay`), que llega con HTML y
+/// entidades como `0&nbsp;/&nbsp;30`, a una sola línea de texto plano (`0 / 30`).
+pub fn normalize_grade(raw: &str) -> String {
+    strip_html_to_plain_text(raw)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Decodifica entidades HTML con nombre (`&nbsp;`, `&aacute;`) y numéricas (`&#160;`, `&#xA0;`)
 /// en una sola pasada, para que `&amp;lt;` quede como `&lt;` y no como `<`.
 /// El espacio de no separación se convierte en espacio normal. Las entidades desconocidas se
@@ -227,8 +236,10 @@ impl MoodleClient {
         if let Some(fb) = raw.feedback {
             grade = fb
                 .gradefordisplay
-                .filter(|g| !g.trim().is_empty())
-                .or_else(|| fb.grade.and_then(|g| g.grade));
+                .map(|g| normalize_grade(&g))
+                .filter(|g| !g.is_empty())
+                .or_else(|| fb.grade.and_then(|g| g.grade).map(|g| normalize_grade(&g)))
+                .filter(|g| !g.is_empty());
 
             if let Some(plugins) = fb.plugins {
                 for plugin in plugins {
@@ -274,6 +285,18 @@ mod tests {
         let html_entities = "<p>Puntaje:&nbsp;&gt;= 90% &amp; &lt; 100%</p>";
         let plain_entities = strip_html_to_plain_text(html_entities);
         assert_eq!(plain_entities, "Puntaje: >= 90% & < 100%");
+    }
+
+    #[test]
+    fn test_normalize_grade_decodes_nbsp() {
+        assert_eq!(normalize_grade("0&nbsp;/&nbsp;30"), "0 / 30");
+        assert_eq!(normalize_grade("12&#160;/&#xA0;15"), "12 / 15");
+        assert_eq!(
+            normalize_grade("<span>10,00</span>\u{a0}/ 10"),
+            "10,00 / 10"
+        );
+        assert_eq!(normalize_grade("30 / 30"), "30 / 30");
+        assert_eq!(normalize_grade("&nbsp;"), "");
     }
 
     #[test]
