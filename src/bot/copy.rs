@@ -97,14 +97,14 @@ pub const PENDIENTES_ALL_CLEAR: &str =
 
 pub fn pendientes_header(count: usize) -> String {
     format!(
-        "👁️ <b>Roberto's watching your procrastination.</b> Tienes {} entregas pendientes:\n",
+        "👁️ <b>Roberto's watching your procrastination.</b> Tienes {} entregas pendientes:",
         count
     )
 }
 
 // --- COMANDO /notas ---
 pub const NOTAS_HEADER: &str =
-    "👁️ <b>Roberto's watching your GPA.</b> Aquí está el desglose de tus notas actuales:\n";
+    "👁️ <b>Roberto's watching your GPA.</b> Aquí está el desglose de tus notas actuales:";
 
 pub const NOTAS_EMPTY: &str =
     "👁️ <b>Roberto's watching your grades.</b> Aún no tienes calificaciones registradas en tus asignaturas activas.";
@@ -113,10 +113,7 @@ pub const NOTAS_EMPTY: &str =
 pub const CURSOS_EMPTY: &str = "ℹ️ No tienes ninguna asignatura activa vinculada en este momento.";
 
 pub fn cursos_header(count: usize) -> String {
-    format!(
-        "👁️ <b>Roberto's watching these {} courses 24/7:</b>\n",
-        count
-    )
+    format!("👁️ <b>Roberto's watching these {} courses 24/7:</b>", count)
 }
 
 // --- ALERTAS PROACTIVAS Y RESÚMENES ---
@@ -242,6 +239,14 @@ mod tests {
             clean_feedback_for_html(with_special),
             "Muy bien &amp; felicitaciones"
         );
+    }
+
+    #[test]
+    fn test_list_headers_do_not_end_with_newline() {
+        // chunk_html_messages ya separa con una línea en blanco; un salto extra deja dos.
+        assert!(!pendientes_header(3).ends_with('\n'));
+        assert!(!NOTAS_HEADER.ends_with('\n'));
+        assert!(!cursos_header(3).ends_with('\n'));
     }
 
     #[test]
